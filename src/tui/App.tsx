@@ -2,6 +2,7 @@ import React, { useCallback, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { RuntimeOptions } from "../cli/runtime.js";
 import { runAgent } from "../agent/session.js";
+import { createAgentSession, type AgentSession } from "../agent/conversation.js";
 import { applyPreparedChanges, type PreparedChange } from "../agent/changes.js";
 import { MessageList, type UiMessage } from "./components/MessageList.js";
 import { InputBox } from "./components/InputBox.js";
@@ -17,6 +18,7 @@ type AppStatus = "idle" | "working" | "confirming" | "applying" | "error";
 export function App({ runtime }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const [messages, setMessages] = useState<readonly UiMessage[]>([]);
+  const [agentSession, setAgentSession] = useState<AgentSession>(() => createAgentSession(runtime));
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<AppStatus>("idle");
   const [statusText, setStatusText] = useState("Ready");
@@ -32,8 +34,9 @@ export function App({ runtime }: AppProps): React.ReactElement {
       setStatus("working");
       setStatusText("Reading workspace and requesting model...");
 
-      void runAgent({ runtime, prompt })
+      void runAgent({ session: agentSession, prompt })
         .then((result) => {
+          setAgentSession(result.session);
           setMessages((current) => [
             ...current,
             { role: "assistant", content: result.message.length > 0 ? result.message : "Done." }
@@ -56,7 +59,7 @@ export function App({ runtime }: AppProps): React.ReactElement {
           setStatusText("Request failed. Press Enter to continue or Ctrl+C to exit.");
         });
     },
-    [runtime]
+    [agentSession]
   );
 
   const applyChanges = useCallback(() => {

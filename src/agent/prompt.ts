@@ -1,12 +1,18 @@
 import type { ChatMessage } from "../model/types.js";
 import type { WorkspaceSnapshot } from "../workspace/files.js";
+import type { ConversationMessage } from "./conversation.js";
 
-export function buildMessages(userPrompt: string, snapshot: WorkspaceSnapshot): readonly ChatMessage[] {
+export function buildMessages(
+  userPrompt: string,
+  snapshot: WorkspaceSnapshot,
+  history: readonly ConversationMessage[] = []
+): readonly ChatMessage[] {
   return [
     {
       role: "system",
       content: buildSystemPrompt()
     },
+    ...renderHistory(history),
     {
       role: "user",
       content: buildUserPrompt(userPrompt, snapshot)
@@ -51,7 +57,7 @@ Schema rules:
 }
 
 function buildUserPrompt(userPrompt: string, snapshot: WorkspaceSnapshot): string {
-  return `User request:
+  return `Current user request:
 ${userPrompt}
 
 Working directory:
@@ -77,4 +83,15 @@ function renderLoadedFiles(snapshot: WorkspaceSnapshot): string {
   }
 
   return parts.length === 0 ? "(none)" : parts.join("\n");
+}
+
+function renderHistory(history: readonly ConversationMessage[]): readonly ChatMessage[] {
+  return history.map((message) => ({
+    role: message.role,
+    content: message.role === "assistant" ? renderAssistantHistoryMessage(message.content) : message.content
+  }));
+}
+
+function renderAssistantHistoryMessage(content: string): string {
+  return JSON.stringify({ message: content, changes: [] });
 }

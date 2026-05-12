@@ -1,6 +1,5 @@
 import { DeepSeekClient } from "../model/deepseek.js";
 import type { ModelClient } from "../model/types.js";
-import type { RuntimeOptions } from "../cli/runtime.js";
 import { scanWorkspace, type WorkspaceSnapshot } from "../workspace/files.js";
 import { buildMessages } from "./prompt.js";
 import {
@@ -9,9 +8,10 @@ import {
   prepareChanges,
   type PreparedChange
 } from "./changes.js";
+import { appendAgentTurn, getHistoryWindow, type AgentSession } from "./conversation.js";
 
 export interface AgentRunOptions {
-  readonly runtime: RuntimeOptions;
+  readonly session: AgentSession;
   readonly prompt: string;
   readonly client?: ModelClient;
   readonly onToken?: (token: string) => void;
@@ -20,24 +20,28 @@ export interface AgentRunOptions {
 export interface AgentResult {
   readonly message: string;
   readonly rawResponse: string;
+  readonly session: AgentSession;
   readonly snapshot: WorkspaceSnapshot;
   readonly changes: readonly PreparedChange[];
   readonly diff: string;
 }
 
 export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
-  const snapshot = await scanWorkspace(options.runtime.cwd);
-  const client = options.client ?? new DeepSeekClient({ apiKey: options.runtime.apiKey });
-  const messages = buildMessages(options.prompt, snapshot);
-  const rawResponse = options.runtime.stream
-    ? await readStreamedResponse(client, options.runtime.model, messages, options.onToken)
-    : await readCompleteResponse(client, options.runtime.model, messages);
+  const { runtime } = options.session;
+  const snapshot = await scanWorkspace(runtime.cwd);
+  const client = options.client ?? new DeepSeekClient({ apiKey: runtime.apiKey });
+  const messages = buildMessages(options.prompt, snapshot, getHistoryWindow(options.session));
+  const rawResponse = runtime.stream
+    ? await readStreamedResponse(client, runtime.model, messages, options.onToken)
+    : await readCompleteResponse(client, runtime.model, messages);
   const parsed = parseAssistantResult(rawResponse);
-  const changes = await prepareChanges(options.runtime.cwd, parsed.changes);
+  const changes = await prepareChanges(runtime.cwd, parsed.changes);
+  const nextSession = appendAgentTurn(options.session, options.prompt, parsed.message);
 
   return {
     message: parsed.message,
     rawResponse,
+    session: nextSession,
     snapshot,
     changes,
     diff: formatPreparedDiff(changes)
