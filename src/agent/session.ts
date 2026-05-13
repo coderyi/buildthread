@@ -1,6 +1,6 @@
 import { DeepSeekClient } from "../model/deepseek.js";
 import type { AssistantResponse, ChatMessage, ModelClient } from "../model/types.js";
-import { executeToolAction } from "../tools/registry.js";
+import { executeToolAction, isRegisteredToolName } from "../tools/registry.js";
 import type { ToolAction, ToolObservation } from "../tools/types.js";
 import { scanWorkspace, type WorkspaceSnapshot } from "../workspace/files.js";
 import { buildMessages } from "./prompt.js";
@@ -146,8 +146,8 @@ function parseAssistantResponse(text: string): AssistantResponse {
     throw new Error("Assistant action must be an object.");
   }
 
-  if (action.tool !== "read_file") {
-    throw new Error("Assistant action tool must be read_file.");
+  if (!isRegisteredToolName(action.tool)) {
+    throw new Error(`Assistant action tool is not registered: ${String(action.tool)}`);
   }
 
   if (!isObject(action.arguments)) {
@@ -157,7 +157,7 @@ function parseAssistantResponse(text: string): AssistantResponse {
   return {
     type: "action",
     action: {
-      tool: "read_file",
+      tool: action.tool,
       arguments: action.arguments
     }
   };

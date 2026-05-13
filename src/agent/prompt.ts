@@ -31,6 +31,20 @@ You may either request a tool action or return a final result.
 
 Tool action schema:
 
+Search for text:
+
+{
+  "action": {
+    "tool": "grep",
+    "arguments": {
+      "query": "literal text to find",
+      "include": "optional/path-or-glob"
+    }
+  }
+}
+
+Read an exact file:
+
 {
   "action": {
     "tool": "read_file",
@@ -40,7 +54,10 @@ Tool action schema:
   }
 }
 
-Use the read_file action when you need exact file contents before answering. For requests that ask you to find where a UI, component, function, or behavior is implemented and explain it, request read_file for the most relevant file before returning your final result.
+Tool rules:
+- Use grep when you need to find relevant files by text. grep searches literal text, accepts query and optional include, returns matching paths, line numbers, and lines, and may truncate large result sets.
+- Use read_file when you need exact file contents before answering or editing.
+- For requests that ask you to find where a UI, component, function, or behavior is implemented and explain it, request grep first when the relevant file is not already clear, then read_file for the most relevant file before returning your final result.
 
 After tool observations, return one final JSON object matching this schema:
 

@@ -156,24 +156,52 @@ export function App({ runtime }: AppProps): React.ReactElement {
 
 function formatAgentEvent(event: AgentEvent): UiMessage {
   if (event.type === "tool_call") {
-    const path = event.action.arguments.path;
     return {
       role: "system",
-      content: `Model requested ${event.action.tool}${typeof path === "string" ? `: ${path}` : ""}`
+      content: formatToolCall(event)
     };
   }
 
   if (event.observation.ok) {
-    return {
-      role: "system",
-      content: `Runtime read_file completed: ${event.observation.path} (${event.observation.size} bytes)`
-    };
+    return { role: "system", content: formatToolObservation(event.observation) };
   }
 
   return {
     role: "system",
-    content: `Runtime read_file failed: ${event.observation.error}`
+    content: `Runtime ${event.observation.tool} failed: ${event.observation.error}`
   };
+}
+
+function formatToolCall(event: Extract<AgentEvent, { readonly type: "tool_call" }>): string {
+  const { action } = event;
+
+  if (action.tool === "read_file") {
+    const path = action.arguments.path;
+    return `Model requested read_file${typeof path === "string" ? `: ${path}` : ""}`;
+  }
+
+  const query = action.arguments.query;
+  const include = action.arguments.include;
+  const queryText = typeof query === "string" ? `: ${query}` : "";
+  const includeText = typeof include === "string" ? ` (${include})` : "";
+  return `Model requested grep${queryText}${includeText}`;
+}
+
+function formatToolObservation(observation: Extract<AgentEvent, { readonly type: "tool_observation" }>["observation"]): string {
+  if (!observation.ok) {
+    return `Runtime ${observation.tool} failed: ${observation.error}`;
+  }
+
+  if (observation.tool === "read_file") {
+    return `Runtime read_file completed: ${observation.path} (${observation.size} bytes)`;
+  }
+
+  const header = `Runtime grep completed: ${observation.matchCount} match${
+    observation.matchCount === 1 ? "" : "es"
+  } after searching ${observation.searchedFiles} file${observation.searchedFiles === 1 ? "" : "s"}`;
+  const matches = observation.matches.map((match) => `${match.path}:${match.line}: ${match.text}`);
+  const truncated = observation.truncated ? ["...results truncated"] : [];
+  return [header, ...matches, ...truncated].join("\n");
 }
 
 function formatAgentStatus(event: AgentEvent): string {

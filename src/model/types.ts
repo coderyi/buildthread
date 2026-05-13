@@ -1,3 +1,5 @@
+import type { ToolAction } from "../tools/types.js";
+
 export type ChatRole = "system" | "user" | "assistant";
 
 export interface ChatMessage {
@@ -24,10 +26,7 @@ export type AssistantResponse =
     }
   | {
       readonly type: "action";
-      readonly action: {
-        readonly tool: "read_file";
-        readonly arguments: Record<string, unknown>;
-      };
+      readonly action: ToolAction;
     };
 
 export type ModelStreamEvent =

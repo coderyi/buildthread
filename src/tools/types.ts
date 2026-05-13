@@ -1,4 +1,4 @@
-export type ToolName = "read_file";
+export type ToolName = "read_file" | "grep";
 
 export interface ToolAction {
   readonly tool: ToolName;
@@ -9,13 +9,30 @@ export interface ToolContext {
   readonly cwd: string;
 }
 
-export interface ToolSuccessObservation {
+export interface ReadFileSuccessObservation {
   readonly ok: true;
-  readonly tool: ToolName;
+  readonly tool: "read_file";
   readonly path: string;
   readonly content: string;
   readonly hash: string;
   readonly size: number;
+}
+
+export interface GrepMatch {
+  readonly path: string;
+  readonly line: number;
+  readonly text: string;
+}
+
+export interface GrepSuccessObservation {
+  readonly ok: true;
+  readonly tool: "grep";
+  readonly query: string;
+  readonly include?: string;
+  readonly matches: readonly GrepMatch[];
+  readonly matchCount: number;
+  readonly searchedFiles: number;
+  readonly truncated: boolean;
 }
 
 export interface ToolErrorObservation {
@@ -24,7 +41,7 @@ export interface ToolErrorObservation {
   readonly error: string;
 }
 
-export type ToolObservation = ToolSuccessObservation | ToolErrorObservation;
+export type ToolObservation = ReadFileSuccessObservation | GrepSuccessObservation | ToolErrorObservation;
 
 export interface ToolDefinition {
   readonly name: ToolName;
