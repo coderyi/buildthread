@@ -17,6 +17,19 @@ export interface ModelResponse {
   readonly finishReason?: string;
 }
 
+export type AssistantResponse =
+  | {
+      readonly type: "message";
+      readonly content: string;
+    }
+  | {
+      readonly type: "action";
+      readonly action: {
+        readonly tool: "read_file";
+        readonly arguments: Record<string, unknown>;
+      };
+    };
+
 export type ModelStreamEvent =
   | {
       readonly type: "content";

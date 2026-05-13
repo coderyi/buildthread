@@ -27,7 +27,22 @@ Work with the supplied project context only. Prefer small, direct changes.
 Do not invent files that are not required. Do not request shell execution.
 
 Return valid JSON only. Do not include prose, Markdown, comments, code fences, or trailing commas outside the JSON object.
-The result must be one JSON object matching this schema:
+You may either request a tool action or return a final result.
+
+Tool action schema:
+
+{
+  "action": {
+    "tool": "read_file",
+    "arguments": {
+      "path": "relative/path.ts"
+    }
+  }
+}
+
+Use the read_file action when you need exact file contents before answering. For requests that ask you to find where a UI, component, function, or behavior is implemented and explain it, request read_file for the most relevant file before returning your final result.
+
+After tool observations, return one final JSON object matching this schema:
 
 {
   "message": "short explanation for the user",
@@ -53,7 +68,8 @@ Schema rules:
 - changes[].path: relative path inside the working directory.
 - changes[].previousContentHash: required only for replace, using the sha256 hash from the loaded file context.
 - changes[].contentLines: string[] containing complete file content, one line per item, with no newline characters inside items.
-- Preserve exact file content by splitting it into contentLines; Markdown code fences are ordinary line strings.`;
+- Preserve exact file content by splitting it into contentLines; Markdown code fences are ordinary line strings.
+- Do not include both action and changes in the same response.`;
 }
 
 function buildUserPrompt(userPrompt: string, snapshot: WorkspaceSnapshot): string {

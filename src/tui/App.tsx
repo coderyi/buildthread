@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { RuntimeOptions } from "../cli/runtime.js";
-import { runAgent } from "../agent/session.js";
+import { runAgent, type AgentEvent } from "../agent/session.js";
 import { createAgentSession, type AgentSession } from "../agent/conversation.js";
 import { applyPreparedChanges, type PreparedChange } from "../agent/changes.js";
 import { MessageList, type UiMessage } from "./components/MessageList.js";
@@ -34,7 +34,14 @@ export function App({ runtime }: AppProps): React.ReactElement {
       setStatus("working");
       setStatusText("Reading workspace and requesting model...");
 
-      void runAgent({ session: agentSession, prompt })
+      void runAgent({
+        session: agentSession,
+        prompt,
+        onEvent: (event) => {
+          setMessages((current) => [...current, formatAgentEvent(event)]);
+          setStatusText(formatAgentStatus(event));
+        }
+      })
         .then((result) => {
           setAgentSession(result.session);
           setMessages((current) => [
@@ -145,4 +152,34 @@ export function App({ runtime }: AppProps): React.ReactElement {
       <InputBox value={input} disabled={status === "working" || status === "applying" || status === "confirming"} />
     </Box>
   );
+}
+
+function formatAgentEvent(event: AgentEvent): UiMessage {
+  if (event.type === "tool_call") {
+    const path = event.action.arguments.path;
+    return {
+      role: "system",
+      content: `Model requested ${event.action.tool}${typeof path === "string" ? `: ${path}` : ""}`
+    };
+  }
+
+  if (event.observation.ok) {
+    return {
+      role: "system",
+      content: `Runtime read_file completed: ${event.observation.path} (${event.observation.size} bytes)`
+    };
+  }
+
+  return {
+    role: "system",
+    content: `Runtime read_file failed: ${event.observation.error}`
+  };
+}
+
+function formatAgentStatus(event: AgentEvent): string {
+  if (event.type === "tool_call") {
+    return `Requesting tool: ${event.action.tool}`;
+  }
+
+  return event.observation.ok ? "Tool observation received; continuing model request..." : "Tool failed; continuing model request...";
 }

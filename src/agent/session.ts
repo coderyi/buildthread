@@ -1,5 +1,7 @@
 import { DeepSeekClient } from "../model/deepseek.js";
-import type { ModelClient } from "../model/types.js";
+import type { AssistantResponse, ChatMessage, ModelClient } from "../model/types.js";
+import { executeToolAction } from "../tools/registry.js";
+import type { ToolAction, ToolObservation } from "../tools/types.js";
 import { scanWorkspace, type WorkspaceSnapshot } from "../workspace/files.js";
 import { buildMessages } from "./prompt.js";
 import {
@@ -15,6 +17,7 @@ export interface AgentRunOptions {
   readonly prompt: string;
   readonly client?: ModelClient;
   readonly onToken?: (token: string) => void;
+  readonly onEvent?: (event: AgentEvent) => void;
 }
 
 export interface AgentResult {
@@ -26,26 +29,66 @@ export interface AgentResult {
   readonly diff: string;
 }
 
+export type AgentEvent =
+  | {
+      readonly type: "tool_call";
+      readonly round: number;
+      readonly action: ToolAction;
+    }
+  | {
+      readonly type: "tool_observation";
+      readonly round: number;
+      readonly observation: ToolObservation;
+    };
+
+const MAX_TOOL_ROUNDS = 4;
+
 export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
   const { runtime } = options.session;
   const snapshot = await scanWorkspace(runtime.cwd);
   const client = options.client ?? new DeepSeekClient({ apiKey: runtime.apiKey });
-  const messages = buildMessages(options.prompt, snapshot, getHistoryWindow(options.session));
-  const rawResponse = runtime.stream
-    ? await readStreamedResponse(client, runtime.model, messages, options.onToken)
-    : await readCompleteResponse(client, runtime.model, messages);
-  const parsed = parseAssistantResult(rawResponse);
-  const changes = await prepareChanges(runtime.cwd, parsed.changes);
-  const nextSession = appendAgentTurn(options.session, options.prompt, parsed.message);
+  const messages: ChatMessage[] = [...buildMessages(options.prompt, snapshot, getHistoryWindow(options.session))];
 
-  return {
-    message: parsed.message,
-    rawResponse,
-    session: nextSession,
-    snapshot,
-    changes,
-    diff: formatPreparedDiff(changes)
-  };
+  for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
+    const rawResponse = runtime.stream
+      ? await readStreamedResponse(client, runtime.model, messages)
+      : await readCompleteResponse(client, runtime.model, messages);
+    const assistantResponse = parseAssistantResponse(rawResponse);
+
+    if (assistantResponse.type === "message") {
+      if (runtime.stream) {
+        options.onToken?.(rawResponse);
+      }
+
+      const parsed = parseAssistantResult(assistantResponse.content);
+      const changes = await prepareChanges(runtime.cwd, parsed.changes);
+      const nextSession = appendAgentTurn(options.session, options.prompt, parsed.message);
+
+      return {
+        message: parsed.message,
+        rawResponse,
+        session: nextSession,
+        snapshot,
+        changes,
+        diff: formatPreparedDiff(changes)
+      };
+    }
+
+    if (round >= MAX_TOOL_ROUNDS) {
+      throw new Error(`Model exceeded the maximum of ${MAX_TOOL_ROUNDS} tool round(s).`);
+    }
+
+    const toolRound = round + 1;
+    options.onEvent?.({ type: "tool_call", round: toolRound, action: assistantResponse.action });
+    const observation = await executeToolAction(assistantResponse.action, { cwd: runtime.cwd });
+    options.onEvent?.({ type: "tool_observation", round: toolRound, observation });
+    messages.push(
+      { role: "assistant", content: rawResponse },
+      { role: "user", content: renderToolObservation(observation) }
+    );
+  }
+
+  throw new Error(`Model exceeded the maximum of ${MAX_TOOL_ROUNDS} tool round(s).`);
 }
 
 async function readCompleteResponse(
@@ -65,17 +108,81 @@ async function readCompleteResponse(
 async function readStreamedResponse(
   client: ModelClient,
   model: string,
-  messages: Parameters<ModelClient["stream"]>[0]["messages"],
-  onToken?: (token: string) => void
+  messages: Parameters<ModelClient["stream"]>[0]["messages"]
 ): Promise<string> {
   let content = "";
 
   for await (const event of client.stream({ model, messages, temperature: 0.2 })) {
     if (event.type === "content") {
       content += event.content;
-      onToken?.(event.content);
     }
   }
 
   return content;
+}
+
+function parseAssistantResponse(text: string): AssistantResponse {
+  const jsonText = extractJson(text);
+
+  if (jsonText === undefined) {
+    return { type: "message", content: text };
+  }
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return { type: "message", content: text };
+  }
+
+  if (!isObject(parsed) || parsed.action === undefined) {
+    return { type: "message", content: text };
+  }
+
+  const action = parsed.action;
+
+  if (!isObject(action)) {
+    throw new Error("Assistant action must be an object.");
+  }
+
+  if (action.tool !== "read_file") {
+    throw new Error("Assistant action tool must be read_file.");
+  }
+
+  if (!isObject(action.arguments)) {
+    throw new Error("Assistant action arguments must be an object.");
+  }
+
+  return {
+    type: "action",
+    action: {
+      tool: "read_file",
+      arguments: action.arguments
+    }
+  };
+}
+
+function renderToolObservation(observation: ToolObservation): string {
+  return `Tool observation:\n${JSON.stringify(observation, null, 2)}`;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function extractJson(text: string): string | undefined {
+  const trimmed = text.trim();
+
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    return trimmed;
+  }
+
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+
+  if (fenced?.[1] !== undefined) {
+    return fenced[1].trim();
+  }
+
+  return undefined;
 }
