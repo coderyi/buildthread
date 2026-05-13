@@ -1,7 +1,7 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { RuntimeOptions } from "../cli/runtime.js";
-import { runAgent, type AgentEvent } from "../agent/session.js";
+import { runAgent, type AgentEvent, type ApprovalRequest } from "../agent/session.js";
 import { createAgentSession, type AgentSession } from "../agent/conversation.js";
 import { applyPreparedChanges, type PreparedChange } from "../agent/changes.js";
 import { MessageList, type UiMessage } from "./components/MessageList.js";
@@ -13,7 +13,7 @@ interface AppProps {
   readonly runtime: RuntimeOptions;
 }
 
-type AppStatus = "idle" | "working" | "confirming" | "applying" | "error";
+type AppStatus = "idle" | "working" | "approving" | "confirming" | "applying" | "error";
 
 export function App({ runtime }: AppProps): React.ReactElement {
   const { exit } = useApp();
@@ -24,6 +24,8 @@ export function App({ runtime }: AppProps): React.ReactElement {
   const [statusText, setStatusText] = useState("Ready");
   const [diff, setDiff] = useState("");
   const [pendingChanges, setPendingChanges] = useState<readonly PreparedChange[]>([]);
+  const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | undefined>(undefined);
+  const approvalResolver = useRef<((approved: boolean) => void) | undefined>(undefined);
 
   const submit = useCallback(
     (prompt: string) => {
@@ -31,6 +33,7 @@ export function App({ runtime }: AppProps): React.ReactElement {
       setInput("");
       setDiff("");
       setPendingChanges([]);
+      setPendingApproval(undefined);
       setStatus("working");
       setStatusText("Reading workspace and requesting model...");
 
@@ -40,6 +43,14 @@ export function App({ runtime }: AppProps): React.ReactElement {
         onEvent: (event) => {
           setMessages((current) => [...current, formatAgentEvent(event)]);
           setStatusText(formatAgentStatus(event));
+        },
+        requestApproval: (request) => {
+          return new Promise<boolean>((resolve) => {
+            approvalResolver.current = resolve;
+            setPendingApproval(request);
+            setStatus("approving");
+            setStatusText("Approve shell command? Press y to run, n to deny.");
+          });
         }
       })
         .then((result) => {
@@ -93,9 +104,27 @@ export function App({ runtime }: AppProps): React.ReactElement {
       });
   }, [pendingChanges]);
 
+  const answerApproval = useCallback((approved: boolean) => {
+    const resolve = approvalResolver.current;
+    approvalResolver.current = undefined;
+    setPendingApproval(undefined);
+    setStatus("working");
+    setStatusText(approved ? "Shell command approved; running..." : "Shell command denied; continuing...");
+    resolve?.(approved);
+  }, []);
+
   useInput((inputChar, key) => {
     if (key.ctrl && inputChar === "c") {
       exit();
+      return;
+    }
+
+    if (status === "approving") {
+      if (inputChar.toLowerCase() === "y") {
+        answerApproval(true);
+      } else if (inputChar.toLowerCase() === "n" || key.escape) {
+        answerApproval(false);
+      }
       return;
     }
 
@@ -147,9 +176,27 @@ export function App({ runtime }: AppProps): React.ReactElement {
       <StatusLine status={statusText} />
       <Box marginY={1} flexDirection="column">
         <MessageList messages={messages} />
+        <CommandApprovalView request={pendingApproval} />
         <DiffView diff={diff} />
       </Box>
-      <InputBox value={input} disabled={status === "working" || status === "applying" || status === "confirming"} />
+      <InputBox
+        value={input}
+        disabled={status === "working" || status === "applying" || status === "approving" || status === "confirming"}
+      />
+    </Box>
+  );
+}
+
+function CommandApprovalView({ request }: { readonly request: ApprovalRequest | undefined }): React.ReactElement | null {
+  if (request === undefined) {
+    return null;
+  }
+
+  return (
+    <Box borderStyle="round" borderColor="yellow" paddingX={1} marginTop={1} flexDirection="column">
+      <Text color="yellow">Shell command approval required</Text>
+      <Text>{request.command}</Text>
+      <Text color="gray">Press y to run, n to deny.</Text>
     </Box>
   );
 }
@@ -159,6 +206,34 @@ function formatAgentEvent(event: AgentEvent): UiMessage {
     return {
       role: "system",
       content: formatToolCall(event)
+    };
+  }
+
+  if (event.type === "approval_requested") {
+    return {
+      role: "system",
+      content: `Approval requested for shell command: ${event.request.command}`
+    };
+  }
+
+  if (event.type === "approval_granted") {
+    return {
+      role: "system",
+      content: `Approval granted: ${event.request.command}`
+    };
+  }
+
+  if (event.type === "approval_denied") {
+    return {
+      role: "system",
+      content: `Approval denied: ${event.request.command}`
+    };
+  }
+
+  if (event.type === "command_finished") {
+    return {
+      role: "system",
+      content: formatCommandFinishedSummary(event.observation)
     };
   }
 
@@ -180,6 +255,11 @@ function formatToolCall(event: Extract<AgentEvent, { readonly type: "tool_call" 
     return `Model requested read_file${typeof path === "string" ? `: ${path}` : ""}`;
   }
 
+  if (action.tool === "shell") {
+    const command = action.arguments.command;
+    return `Model requested shell${typeof command === "string" ? `: ${command}` : ""}`;
+  }
+
   const query = action.arguments.query;
   const include = action.arguments.include;
   const queryText = typeof query === "string" ? `: ${query}` : "";
@@ -196,6 +276,10 @@ function formatToolObservation(observation: Extract<AgentEvent, { readonly type:
     return `Runtime read_file completed: ${observation.path} (${observation.size} bytes)`;
   }
 
+  if (observation.tool === "shell") {
+    return formatCommandFinished(observation);
+  }
+
   const header = `Runtime grep completed: ${observation.matchCount} match${
     observation.matchCount === 1 ? "" : "es"
   } after searching ${observation.searchedFiles} file${observation.searchedFiles === 1 ? "" : "s"}`;
@@ -209,5 +293,66 @@ function formatAgentStatus(event: AgentEvent): string {
     return `Requesting tool: ${event.action.tool}`;
   }
 
+  if (event.type === "approval_requested") {
+    return "Waiting for shell command approval...";
+  }
+
+  if (event.type === "approval_granted") {
+    return "Shell command approved; running...";
+  }
+
+  if (event.type === "approval_denied") {
+    return "Shell command denied; continuing model request...";
+  }
+
+  if (event.type === "command_finished") {
+    return "Shell command finished; continuing model request...";
+  }
+
   return event.observation.ok ? "Tool observation received; continuing model request..." : "Tool failed; continuing model request...";
+}
+
+function formatCommandFinished(observation: Extract<AgentEvent, { readonly type: "command_finished" }>["observation"]): string {
+  if (!observation.ok) {
+    return `Runtime ${observation.tool} failed: ${observation.error}`;
+  }
+
+  if (observation.tool !== "shell") {
+    return formatToolObservation(observation);
+  }
+
+  const exitCode = observation.exitCode === null ? "null" : String(observation.exitCode);
+  const timedOut = observation.timedOut ? " (timed out)" : "";
+  const header = `Command finished${timedOut}: exitCode=${exitCode}, duration=${observation.durationMs}ms`;
+  const stdout = observation.stdout.length > 0 ? `stdout:\n${truncateForDisplay(observation.stdout)}` : "stdout: (empty)";
+  const stderr = observation.stderr.length > 0 ? `\nstderr:\n${truncateForDisplay(observation.stderr)}` : "";
+  const truncated = observation.truncated ? "\n(output truncated)" : "";
+
+  return `${header}\n${stdout}${stderr}${truncated}`;
+}
+
+function formatCommandFinishedSummary(
+  observation: Extract<AgentEvent, { readonly type: "command_finished" }>["observation"]
+): string {
+  if (!observation.ok) {
+    return `Command failed before completion: ${observation.error}`;
+  }
+
+  if (observation.tool !== "shell") {
+    return `Runtime ${observation.tool} completed.`;
+  }
+
+  const exitCode = observation.exitCode === null ? "null" : String(observation.exitCode);
+  const timedOut = observation.timedOut ? " (timed out)" : "";
+  return `Command finished${timedOut}: ${observation.command} (exitCode=${exitCode})`;
+}
+
+function truncateForDisplay(value: string): string {
+  const maxChars = 4_000;
+
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  return `${value.slice(0, maxChars)}\n...display truncated`;
 }

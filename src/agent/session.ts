@@ -1,5 +1,6 @@
 import { DeepSeekClient } from "../model/deepseek.js";
 import type { AssistantResponse, ChatMessage, ModelClient } from "../model/types.js";
+import { decideToolPermission } from "../policy/permissions.js";
 import { executeToolAction, isRegisteredToolName } from "../tools/registry.js";
 import type { ToolAction, ToolObservation } from "../tools/types.js";
 import { scanWorkspace, type WorkspaceSnapshot } from "../workspace/files.js";
@@ -18,6 +19,7 @@ export interface AgentRunOptions {
   readonly client?: ModelClient;
   readonly onToken?: (token: string) => void;
   readonly onEvent?: (event: AgentEvent) => void;
+  readonly requestApproval?: (request: ApprovalRequest) => Promise<boolean>;
 }
 
 export interface AgentResult {
@@ -36,12 +38,40 @@ export type AgentEvent =
       readonly action: ToolAction;
     }
   | {
+      readonly type: "approval_requested";
+      readonly round: number;
+      readonly request: ApprovalRequest;
+    }
+  | {
+      readonly type: "approval_granted";
+      readonly round: number;
+      readonly request: ApprovalRequest;
+    }
+  | {
+      readonly type: "approval_denied";
+      readonly round: number;
+      readonly request: ApprovalRequest;
+      readonly observation: ToolObservation;
+    }
+  | {
+      readonly type: "command_finished";
+      readonly round: number;
+      readonly observation: ToolObservation;
+    }
+  | {
       readonly type: "tool_observation";
       readonly round: number;
       readonly observation: ToolObservation;
     };
 
 const MAX_TOOL_ROUNDS = 4;
+
+export interface ApprovalRequest {
+  readonly id: string;
+  readonly action: ToolAction;
+  readonly command: string;
+  readonly reason: string;
+}
 
 export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
   const { runtime } = options.session;
@@ -80,8 +110,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
 
     const toolRound = round + 1;
     options.onEvent?.({ type: "tool_call", round: toolRound, action: assistantResponse.action });
-    const observation = await executeToolAction(assistantResponse.action, { cwd: runtime.cwd });
-    options.onEvent?.({ type: "tool_observation", round: toolRound, observation });
+    const observation = await executeToolActionWithApproval(assistantResponse.action, toolRound, options);
     messages.push(
       { role: "assistant", content: rawResponse },
       { role: "user", content: renderToolObservation(observation) }
@@ -89,6 +118,73 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
   }
 
   throw new Error(`Model exceeded the maximum of ${MAX_TOOL_ROUNDS} tool round(s).`);
+}
+
+async function executeToolActionWithApproval(
+  action: ToolAction,
+  round: number,
+  options: AgentRunOptions
+): Promise<ToolObservation> {
+  const decision = decideToolPermission(action);
+
+  if (!decision.requiresApproval) {
+    const observation = await executeToolAction(action, { cwd: options.session.runtime.cwd });
+    options.onEvent?.({ type: "tool_observation", round, observation });
+    return observation;
+  }
+
+  const command = getShellCommand(action);
+
+  if (command === undefined) {
+    const observation = await executeToolAction(action, { cwd: options.session.runtime.cwd });
+    options.onEvent?.({ type: "tool_observation", round, observation });
+    return observation;
+  }
+
+  const request: ApprovalRequest = {
+    id: `${round}-${Date.now()}`,
+    action,
+    command,
+    reason: decision.reason
+  };
+  options.onEvent?.({ type: "approval_requested", round, request });
+
+  if (options.requestApproval === undefined) {
+    const observation: ToolObservation = {
+      ok: false,
+      tool: action.tool,
+      error: `Shell command requires user approval, but no approval handler is available: ${command}`
+    };
+    options.onEvent?.({ type: "approval_denied", round, request, observation });
+    return observation;
+  }
+
+  const approved = await options.requestApproval(request);
+
+  if (!approved) {
+    const observation: ToolObservation = {
+      ok: false,
+      tool: action.tool,
+      error: `Shell command denied by user: ${command}`
+    };
+    options.onEvent?.({ type: "approval_denied", round, request, observation });
+    return observation;
+  }
+
+  options.onEvent?.({ type: "approval_granted", round, request });
+  const observation = await executeToolAction(action, { cwd: options.session.runtime.cwd });
+  options.onEvent?.({ type: "command_finished", round, observation });
+  options.onEvent?.({ type: "tool_observation", round, observation });
+  return observation;
+}
+
+function getShellCommand(action: ToolAction): string | undefined {
+  if (action.tool !== "shell") {
+    return undefined;
+  }
+
+  const command = action.arguments.command;
+  return typeof command === "string" && command.trim().length > 0 ? command : undefined;
 }
 
 async function readCompleteResponse(

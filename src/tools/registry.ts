@@ -1,8 +1,9 @@
 import { grepTool } from "./grep.js";
 import { readFileTool } from "./read-file.js";
+import { shellTool } from "./shell.js";
 import type { ToolAction, ToolContext, ToolDefinition, ToolName, ToolObservation } from "./types.js";
 
-const toolDefinitions: readonly ToolDefinition[] = [readFileTool, grepTool];
+const toolDefinitions: readonly ToolDefinition[] = [readFileTool, grepTool, shellTool];
 const tools = new Map<ToolName, ToolDefinition>(toolDefinitions.map((tool) => [tool.name, tool]));
 
 export async function executeToolAction(action: ToolAction, context: ToolContext): Promise<ToolObservation> {

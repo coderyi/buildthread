@@ -1,4 +1,4 @@
-export type ToolName = "read_file" | "grep";
+export type ToolName = "read_file" | "grep" | "shell";
 
 export interface ToolAction {
   readonly tool: ToolName;
@@ -35,13 +35,30 @@ export interface GrepSuccessObservation {
   readonly truncated: boolean;
 }
 
+export interface ShellSuccessObservation {
+  readonly ok: true;
+  readonly tool: "shell";
+  readonly command: string;
+  readonly exitCode: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly timedOut: boolean;
+  readonly durationMs: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly truncated: boolean;
+}
+
 export interface ToolErrorObservation {
   readonly ok: false;
   readonly tool: ToolName;
   readonly error: string;
 }
 
-export type ToolObservation = ReadFileSuccessObservation | GrepSuccessObservation | ToolErrorObservation;
+export type ToolObservation =
+  | ReadFileSuccessObservation
+  | GrepSuccessObservation
+  | ShellSuccessObservation
+  | ToolErrorObservation;
 
 export interface ToolDefinition {
   readonly name: ToolName;

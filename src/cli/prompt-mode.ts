@@ -2,12 +2,16 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import type { RuntimeOptions } from "./runtime.js";
 import { writeLine } from "./output.js";
-import { runAgent } from "../agent/session.js";
+import { runAgent, type ApprovalRequest } from "../agent/session.js";
 import { createAgentSession } from "../agent/conversation.js";
 import { applyPreparedChanges } from "../agent/changes.js";
 
 export async function runPromptMode(runtime: RuntimeOptions, prompt: string): Promise<void> {
-  const result = await runAgent({ session: createAgentSession(runtime), prompt });
+  const result = await runAgent({
+    session: createAgentSession(runtime),
+    prompt,
+    requestApproval: confirmShellCommand
+  });
 
   if (result.message.length > 0) {
     writeLine(result.message);
@@ -41,4 +45,10 @@ async function confirm(question: string): Promise<boolean> {
   } finally {
     readline.close();
   }
+}
+
+async function confirmShellCommand(request: ApprovalRequest): Promise<boolean> {
+  writeLine("Shell command approval required:");
+  writeLine(request.command);
+  return confirm("Run this command? [y/N] ");
 }
