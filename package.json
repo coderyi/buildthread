@@ -1,6 +1,6 @@
 {
   "name": "buildthread",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A minimal AI coding CLI.",
   "license": "MIT",
   "type": "module",
