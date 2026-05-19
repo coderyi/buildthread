@@ -9,8 +9,8 @@ export interface RuntimeOptions {
   readonly stream: boolean;
 }
 
-export async function createRuntimeOptions(args: CliArgs): Promise<RuntimeOptions> {
-  const cwd = path.resolve(args.cwd);
+export async function resolveWorkingDirectory(input: string): Promise<string> {
+  const cwd = path.resolve(input);
   const info = await stat(cwd).catch(() => undefined);
 
   if (info === undefined) {
@@ -21,6 +21,11 @@ export async function createRuntimeOptions(args: CliArgs): Promise<RuntimeOption
     throw new Error(`Working directory is not a directory: ${cwd}`);
   }
 
+  return cwd;
+}
+
+export async function createRuntimeOptions(args: CliArgs): Promise<RuntimeOptions> {
+  const cwd = await resolveWorkingDirectory(args.cwd);
   const apiKey = args.apiKey ?? process.env.DEEPSEEK_API_KEY;
 
   if (apiKey === undefined || apiKey.trim().length === 0) {

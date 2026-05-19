@@ -6,10 +6,11 @@ import { runAgent, type ApprovalRequest } from "../agent/session.js";
 import { createAgentSession } from "../agent/conversation.js";
 import { applyPreparedChanges } from "../agent/changes.js";
 
-export async function runPromptMode(runtime: RuntimeOptions, prompt: string): Promise<void> {
+export async function runPromptMode(runtime: RuntimeOptions, prompt: string, skillName?: string): Promise<void> {
   const result = await runAgent({
     session: createAgentSession(runtime),
     prompt,
+    ...(skillName === undefined ? {} : { skillName }),
     requestApproval: confirmShellCommand
   });
 

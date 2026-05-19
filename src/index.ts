@@ -5,8 +5,9 @@ import { render } from "ink";
 import { parseArgs, ArgParseError } from "./cli/args.js";
 import { formatHelp } from "./cli/help.js";
 import { readPackageVersion } from "./cli/version.js";
-import { createRuntimeOptions } from "./cli/runtime.js";
+import { createRuntimeOptions, resolveWorkingDirectory } from "./cli/runtime.js";
 import { runPromptMode } from "./cli/prompt-mode.js";
+import { formatSkills } from "./cli/skills.js";
 import { App } from "./tui/App.js";
 
 async function main(): Promise<void> {
@@ -23,10 +24,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args.skills) {
+    const cwd = await resolveWorkingDirectory(args.cwd);
+    process.stdout.write(await formatSkills(cwd));
+    return;
+  }
+
   const runtime = await createRuntimeOptions(args);
 
   if (args.prompt.length > 0) {
-    await runPromptMode(runtime, args.prompt);
+    await runPromptMode(runtime, args.prompt, args.skill);
     return;
   }
 

@@ -5,6 +5,8 @@ export interface CliArgs {
   readonly stream: boolean;
   readonly help: boolean;
   readonly version: boolean;
+  readonly skills: boolean;
+  readonly skill?: string;
   readonly prompt: string;
 }
 
@@ -24,6 +26,8 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   let stream = true;
   let help = false;
   let version = false;
+  let skills = false;
+  let skill: string | undefined;
   const promptParts: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -65,9 +69,22 @@ export function parseArgs(argv: readonly string[]): CliArgs {
       case "--version":
         version = true;
         break;
+      case "--skills":
+        skills = true;
+        break;
+      case "--skill":
+        skill = readOptionValue(argv, index, arg);
+        index += 1;
+        break;
       default:
         throw new ArgParseError(`Unknown option: ${arg}`);
     }
+  }
+
+  const prompt = promptParts.join(" ").trim();
+
+  if (skill !== undefined && prompt.length === 0 && !help && !version && !skills) {
+    throw new ArgParseError("--skill requires a prompt. Use /skill:<name> inside the TUI.");
   }
 
   const parsed: CliArgs = {
@@ -76,10 +93,12 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     stream,
     help,
     version,
-    prompt: promptParts.join(" ").trim()
+    skills,
+    prompt
   };
 
-  return apiKey === undefined ? parsed : { ...parsed, apiKey };
+  const withApiKey = apiKey === undefined ? parsed : { ...parsed, apiKey };
+  return skill === undefined ? withApiKey : { ...withApiKey, skill };
 }
 
 function readOptionValue(argv: readonly string[], index: number, option: string): string {

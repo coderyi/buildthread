@@ -4,6 +4,7 @@ import { decideToolPermission } from "../policy/permissions.js";
 import { executeToolAction, isRegisteredToolName } from "../tools/registry.js";
 import type { ToolAction, ToolObservation } from "../tools/types.js";
 import { scanWorkspace, type WorkspaceSnapshot } from "../workspace/files.js";
+import { activateExplicitSkill } from "../skills/selector.js";
 import { buildMessages } from "./prompt.js";
 import {
   formatPreparedDiff,
@@ -16,6 +17,7 @@ import { appendAgentTurn, getHistoryWindow, type AgentSession } from "./conversa
 export interface AgentRunOptions {
   readonly session: AgentSession;
   readonly prompt: string;
+  readonly skillName?: string;
   readonly client?: ModelClient;
   readonly onToken?: (token: string) => void;
   readonly onEvent?: (event: AgentEvent) => void;
@@ -32,6 +34,12 @@ export interface AgentResult {
 }
 
 export type AgentEvent =
+  | {
+      readonly type: "skill_selected";
+      readonly name: string;
+      readonly source: "project" | "user";
+      readonly directory: string;
+    }
   | {
       readonly type: "tool_call";
       readonly round: number;
@@ -75,9 +83,21 @@ export interface ApprovalRequest {
 
 export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
   const { runtime } = options.session;
+  const skill =
+    options.skillName === undefined ? undefined : await activateExplicitSkill(runtime.cwd, options.skillName);
+
+  if (skill !== undefined) {
+    options.onEvent?.({
+      type: "skill_selected",
+      name: skill.name,
+      source: skill.source,
+      directory: skill.directory
+    });
+  }
+
   const snapshot = await scanWorkspace(runtime.cwd);
   const client = options.client ?? new DeepSeekClient({ apiKey: runtime.apiKey });
-  const messages: ChatMessage[] = [...buildMessages(options.prompt, snapshot, getHistoryWindow(options.session))];
+  const messages: ChatMessage[] = [...buildMessages(options.prompt, snapshot, getHistoryWindow(options.session), skill)];
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     const rawResponse = runtime.stream

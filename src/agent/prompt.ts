@@ -1,17 +1,20 @@
 import type { ChatMessage } from "../model/types.js";
+import type { ActivatedSkill } from "../skills/types.js";
 import type { WorkspaceSnapshot } from "../workspace/files.js";
 import type { ConversationMessage } from "./conversation.js";
 
 export function buildMessages(
   userPrompt: string,
   snapshot: WorkspaceSnapshot,
-  history: readonly ConversationMessage[] = []
+  history: readonly ConversationMessage[] = [],
+  skill?: ActivatedSkill
 ): readonly ChatMessage[] {
   return [
     {
       role: "system",
       content: buildSystemPrompt()
     },
+    ...renderSkillMessage(skill),
     ...renderHistory(history),
     {
       role: "user",
@@ -100,6 +103,30 @@ Schema rules:
 - changes[].contentLines: string[] containing complete file content, one line per item, with no newline characters inside items.
 - Preserve exact file content by splitting it into contentLines; Markdown code fences are ordinary line strings.
 - Do not include both action and changes in the same response.`;
+}
+
+function renderSkillMessage(skill: ActivatedSkill | undefined): readonly ChatMessage[] {
+  if (skill === undefined) {
+    return [];
+  }
+
+  return [
+    {
+      role: "system",
+      content: buildSkillPrompt(skill)
+    }
+  ];
+}
+
+function buildSkillPrompt(skill: ActivatedSkill): string {
+  return `An explicit skill is active for this request.
+
+Skill name: ${skill.name}
+Skill source: ${skill.source}
+Skill directory: ${skill.directory}
+
+Full SKILL.md:
+${skill.content}`;
 }
 
 function buildUserPrompt(userPrompt: string, snapshot: WorkspaceSnapshot): string {

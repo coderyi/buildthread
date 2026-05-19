@@ -4,10 +4,12 @@ import type { RuntimeOptions } from "../cli/runtime.js";
 import { runAgent, type AgentEvent, type ApprovalRequest } from "../agent/session.js";
 import { createAgentSession, type AgentSession } from "../agent/conversation.js";
 import { applyPreparedChanges, type PreparedChange } from "../agent/changes.js";
+import { parseSkillInput } from "../agent/skill-input.js";
 import { MessageList, type UiMessage } from "./components/MessageList.js";
 import { InputBox } from "./components/InputBox.js";
 import { StatusLine } from "./components/StatusLine.js";
 import { DiffView } from "./components/DiffView.js";
+import { executeSlashCommand } from "./slash-commands.js";
 
 interface AppProps {
   readonly runtime: RuntimeOptions;
@@ -29,17 +31,52 @@ export function App({ runtime }: AppProps): React.ReactElement {
 
   const submit = useCallback(
     (prompt: string) => {
+      const slashCommand = executeSlashCommand(prompt, { runtime });
+
       setMessages((current) => [...current, { role: "user", content: prompt }]);
       setInput("");
       setDiff("");
       setPendingChanges([]);
       setPendingApproval(undefined);
+
+      if (slashCommand.handled) {
+        setStatus("working");
+        setStatusText("Running command...");
+
+        void slashCommand.output
+          .then((output) => {
+            setMessages((current) => [...current, { role: "system", content: output.content }]);
+            setStatus("idle");
+            setStatusText(output.statusText);
+          })
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            setMessages((current) => [...current, { role: "system", content: message }]);
+            setStatus("error");
+            setStatusText("Command failed. Press Enter to continue or Ctrl+C to exit.");
+          });
+        return;
+      }
+
+      let parsedPrompt: ReturnType<typeof parseSkillInput>;
+
+      try {
+        parsedPrompt = parseSkillInput(prompt);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        setMessages((current) => [...current, { role: "system", content: message }]);
+        setStatus("error");
+        setStatusText("Input error. Press Enter to continue or Ctrl+C to exit.");
+        return;
+      }
+
       setStatus("working");
       setStatusText("Reading workspace and requesting model...");
 
       void runAgent({
         session: agentSession,
-        prompt,
+        prompt: parsedPrompt.prompt,
+        ...(parsedPrompt.skillName === undefined ? {} : { skillName: parsedPrompt.skillName }),
         onEvent: (event) => {
           setMessages((current) => [...current, formatAgentEvent(event)]);
           setStatusText(formatAgentStatus(event));
@@ -77,7 +114,7 @@ export function App({ runtime }: AppProps): React.ReactElement {
           setStatusText("Request failed. Press Enter to continue or Ctrl+C to exit.");
         });
     },
-    [agentSession]
+    [agentSession, runtime]
   );
 
   const applyChanges = useCallback(() => {
@@ -202,6 +239,13 @@ function CommandApprovalView({ request }: { readonly request: ApprovalRequest | 
 }
 
 function formatAgentEvent(event: AgentEvent): UiMessage {
+  if (event.type === "skill_selected") {
+    return {
+      role: "system",
+      content: `Using skill: ${event.name} (${event.source})`
+    };
+  }
+
   if (event.type === "tool_call") {
     return {
       role: "system",
@@ -289,6 +333,10 @@ function formatToolObservation(observation: Extract<AgentEvent, { readonly type:
 }
 
 function formatAgentStatus(event: AgentEvent): string {
+  if (event.type === "skill_selected") {
+    return `Using skill: ${event.name}`;
+  }
+
   if (event.type === "tool_call") {
     return `Requesting tool: ${event.action.tool}`;
   }
