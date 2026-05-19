@@ -1,4 +1,5 @@
 export interface CliArgs {
+  readonly command: "chat" | "review";
   readonly model: string;
   readonly cwd: string;
   readonly apiKey?: string;
@@ -8,6 +9,7 @@ export interface CliArgs {
   readonly skills: boolean;
   readonly skill?: string;
   readonly prompt: string;
+  readonly reviewArgs: readonly string[];
 }
 
 export class ArgParseError extends Error {
@@ -28,6 +30,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   let version = false;
   let skills = false;
   let skill: string | undefined;
+  let command: CliArgs["command"] = "chat";
   const promptParts: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -43,6 +46,12 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     }
 
     if (!arg.startsWith("--")) {
+      if (arg === "review" && promptParts.length === 0) {
+        command = "review";
+        promptParts.push(...argv.slice(index));
+        break;
+      }
+
       promptParts.push(arg);
       continue;
     }
@@ -82,19 +91,26 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   }
 
   const prompt = promptParts.join(" ").trim();
+  const reviewArgs = command === "review" ? promptParts.slice(1) : [];
+
+  if (skill !== undefined && command === "review" && !help && !version && !skills) {
+    throw new ArgParseError("--skill cannot be used with review.");
+  }
 
   if (skill !== undefined && prompt.length === 0 && !help && !version && !skills) {
     throw new ArgParseError("--skill requires a prompt. Use /skill:<name> inside the TUI.");
   }
 
   const parsed: CliArgs = {
+    command,
     model,
     cwd,
     stream,
     help,
     version,
     skills,
-    prompt
+    prompt: command === "review" ? "" : prompt,
+    reviewArgs
   };
 
   const withApiKey = apiKey === undefined ? parsed : { ...parsed, apiKey };

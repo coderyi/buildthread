@@ -9,7 +9,8 @@ import { MessageList, type UiMessage } from "./components/MessageList.js";
 import { InputBox } from "./components/InputBox.js";
 import { StatusLine } from "./components/StatusLine.js";
 import { DiffView } from "./components/DiffView.js";
-import { executeSlashCommand } from "./slash-commands.js";
+import { executeSlashCommand, parseReviewSlashCommand } from "./slash-commands.js";
+import { runReview, type ReviewEvent } from "../review/session.js";
 
 interface AppProps {
   readonly runtime: RuntimeOptions;
@@ -31,13 +32,50 @@ export function App({ runtime }: AppProps): React.ReactElement {
 
   const submit = useCallback(
     (prompt: string) => {
-      const slashCommand = executeSlashCommand(prompt, { runtime });
-
       setMessages((current) => [...current, { role: "user", content: prompt }]);
       setInput("");
       setDiff("");
       setPendingChanges([]);
       setPendingApproval(undefined);
+
+      let reviewRequest: ReturnType<typeof parseReviewSlashCommand>;
+
+      try {
+        reviewRequest = parseReviewSlashCommand(prompt);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        setMessages((current) => [...current, { role: "system", content: message }]);
+        setStatus("error");
+        setStatusText("Review usage error. Press Enter to continue or Ctrl+C to exit.");
+        return;
+      }
+
+      if (reviewRequest !== undefined) {
+        setStatus("working");
+        setStatusText(reviewRequest.userFacingHint);
+
+        void runReview({
+          runtime,
+          request: reviewRequest,
+          onEvent: (event) => {
+            setStatusText(formatReviewStatus(event));
+          }
+        })
+          .then((result) => {
+            setMessages((current) => [...current, { role: "assistant", content: result.formatted }]);
+            setStatus("idle");
+            setStatusText("Ready");
+          })
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            setMessages((current) => [...current, { role: "system", content: message }]);
+            setStatus("error");
+            setStatusText("Review failed. Press Enter to continue or Ctrl+C to exit.");
+          });
+        return;
+      }
+
+      const slashCommand = executeSlashCommand(prompt, { runtime });
 
       if (slashCommand.handled) {
         setStatus("working");
@@ -358,6 +396,22 @@ function formatAgentStatus(event: AgentEvent): string {
   }
 
   return event.observation.ok ? "Tool observation received; continuing model request..." : "Tool failed; continuing model request...";
+}
+
+function formatReviewStatus(event: ReviewEvent): string {
+  if (event.type === "entered_review_mode") {
+    return event.hint;
+  }
+
+  if (event.type === "diff_collected") {
+    return `Collected diff (${event.byteLength} bytes); requesting review...`;
+  }
+
+  if (event.type === "model_request_started") {
+    return "Reviewer is analyzing the diff...";
+  }
+
+  return "Review finished.";
 }
 
 function formatCommandFinished(observation: Extract<AgentEvent, { readonly type: "command_finished" }>["observation"]): string {

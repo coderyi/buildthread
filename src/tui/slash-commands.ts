@@ -1,5 +1,7 @@
 import type { RuntimeOptions } from "../cli/runtime.js";
 import { formatSkills } from "../cli/skills.js";
+import { parseReviewArgs } from "../review/session.js";
+import type { ReviewRequest } from "../review/types.js";
 
 interface SlashCommandContext {
   readonly runtime: RuntimeOptions;
@@ -66,4 +68,20 @@ export function executeSlashCommand(input: string, context: SlashCommandContext)
     handled: true,
     output: command.handler(args, context)
   };
+}
+
+export function parseReviewSlashCommand(input: string): ReviewRequest | undefined {
+  const trimmed = input.trim();
+
+  if (!trimmed.startsWith("/")) {
+    return undefined;
+  }
+
+  const [rawName, ...args] = trimmed.slice(1).split(/\s+/u);
+
+  if (rawName?.toLowerCase() !== "review") {
+    return undefined;
+  }
+
+  return parseReviewArgs(args);
 }

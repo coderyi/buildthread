@@ -1,6 +1,7 @@
 export function formatHelp(): string {
   return `Usage:
   buildthread [options] [prompt]
+  buildthread [options] review [--uncommitted | --base <branch> | --commit <sha> | custom instructions]
 
 Options:
   --model <name>     Model to use. Default: deepseek-v4-flash
@@ -11,5 +12,11 @@ Options:
   --skill <name>     Use a local skill for this prompt-mode request
   --help             Show help
   --version          Show version
+
+Review:
+  review             Review uncommitted changes
+  review --base main Review changes from merge-base with main to HEAD
+  review --commit X  Review one commit
+  review <text>      Review uncommitted changes with custom instructions
 `;
 }
