@@ -50,11 +50,32 @@ buildthread --cwd ./my-project "优化项目结构"
 buildthread --model deepseek-v4-flash "重构 src/index.ts"
 ```
 
+列出可用 skills：
+
+```bash
+buildthread --skills
+```
+
+审查未提交改动：
+
+```bash
+buildthread review
+```
+
+审查相对分支或指定提交的改动：
+
+```bash
+buildthread review --base main
+buildthread review --commit <sha>
+```
+
 启动交互界面：
 
 ```bash
 buildthread
 ```
+
+交互界面中可使用 `/skills` 查看 skills，使用 `/skill:<name> <prompt>` 指定 skill，使用 `/review` 进入review流程。
 
 ## 参数
 
@@ -63,6 +84,8 @@ buildthread
 --cwd <path>       指定工作目录，默认当前目录
 --api-key <key>    指定 API Key
 --no-stream        关闭流式输出
+--skills           列出可用本地 skills
+--skill <name>     在一次性 prompt 中使用指定 skill
 --help             查看帮助
 --version          查看版本
 ```
