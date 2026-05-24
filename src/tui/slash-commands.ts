@@ -1,5 +1,7 @@
 import type { RuntimeOptions } from "../cli/runtime.js";
 import { formatSkills } from "../cli/skills.js";
+import { loadMcpConfig } from "../mcp/config.js";
+import { formatMcpConfig } from "../mcp/render.js";
 import { parseReviewArgs } from "../review/session.js";
 import type { ReviewRequest } from "../review/types.js";
 
@@ -44,6 +46,25 @@ const slashCommands: readonly SlashCommandDefinition[] = [
       return {
         content: (await formatSkills(context.runtime.cwd)).trimEnd(),
         statusText: "Skills listed."
+      };
+    }
+  },
+  {
+    name: "mcp",
+    usage: "/mcp",
+    handler: async (args, context) => {
+      if (args.length > 0) {
+        return {
+          content: "Usage: /mcp",
+          statusText: "Command usage error."
+        };
+      }
+
+      const result = await loadMcpConfig(context.runtime.cwd);
+
+      return {
+        content: formatMcpConfig(result).trimEnd(),
+        statusText: result.status === "error" ? "MCP config error." : "MCP config listed."
       };
     }
   }
