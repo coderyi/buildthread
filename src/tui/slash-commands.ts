@@ -1,7 +1,7 @@
 import type { RuntimeOptions } from "../cli/runtime.js";
 import { formatSkills } from "../cli/skills.js";
-import { loadMcpConfig } from "../mcp/config.js";
-import { formatMcpConfig } from "../mcp/render.js";
+import { McpManager } from "../mcp/manager.js";
+import { formatMcpStatus } from "../mcp/render.js";
 import { parseReviewArgs } from "../review/session.js";
 import type { ReviewRequest } from "../review/types.js";
 
@@ -21,6 +21,8 @@ interface SlashCommandDefinition {
   readonly usage: string;
   readonly handler: SlashCommandHandler;
 }
+
+const mcpManagers = new Map<string, McpManager>();
 
 export type SlashCommandResult =
   | {
@@ -60,15 +62,36 @@ const slashCommands: readonly SlashCommandDefinition[] = [
         };
       }
 
-      const result = await loadMcpConfig(context.runtime.cwd);
+      const manager = getMcpManager(context.runtime.cwd);
+      const result = await manager.refresh();
 
       return {
-        content: formatMcpConfig(result).trimEnd(),
-        statusText: result.status === "error" ? "MCP config error." : "MCP config listed."
+        content: formatMcpStatus(result).trimEnd(),
+        statusText: result.status === "config_error" ? "MCP config error." : "MCP status refreshed."
       };
     }
   }
 ];
+
+export function disposeSlashCommandResources(): void {
+  for (const manager of mcpManagers.values()) {
+    manager.dispose();
+  }
+
+  mcpManagers.clear();
+}
+
+function getMcpManager(cwd: string): McpManager {
+  const existing = mcpManagers.get(cwd);
+
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const manager = new McpManager(cwd);
+  mcpManagers.set(cwd, manager);
+  return manager;
+}
 
 export function executeSlashCommand(input: string, context: SlashCommandContext): SlashCommandResult {
   const trimmed = input.trim();

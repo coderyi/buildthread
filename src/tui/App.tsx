@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { RuntimeOptions } from "../cli/runtime.js";
 import { runAgent, type AgentEvent, type ApprovalRequest } from "../agent/session.js";
@@ -9,7 +9,7 @@ import { MessageList, type UiMessage } from "./components/MessageList.js";
 import { InputBox } from "./components/InputBox.js";
 import { StatusLine } from "./components/StatusLine.js";
 import { DiffView } from "./components/DiffView.js";
-import { executeSlashCommand, parseReviewSlashCommand } from "./slash-commands.js";
+import { disposeSlashCommandResources, executeSlashCommand, parseReviewSlashCommand } from "./slash-commands.js";
 import { runReview, type ReviewEvent } from "../review/session.js";
 
 interface AppProps {
@@ -29,6 +29,12 @@ export function App({ runtime }: AppProps): React.ReactElement {
   const [pendingChanges, setPendingChanges] = useState<readonly PreparedChange[]>([]);
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | undefined>(undefined);
   const approvalResolver = useRef<((approved: boolean) => void) | undefined>(undefined);
+
+  useEffect(() => {
+    return () => {
+      disposeSlashCommandResources();
+    };
+  }, []);
 
   const submit = useCallback(
     (prompt: string) => {
@@ -190,6 +196,7 @@ export function App({ runtime }: AppProps): React.ReactElement {
 
   useInput((inputChar, key) => {
     if (key.ctrl && inputChar === "c") {
+      disposeSlashCommandResources();
       exit();
       return;
     }
