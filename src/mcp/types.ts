@@ -48,6 +48,11 @@ export interface McpTool {
   readonly inputSchema?: unknown;
 }
 
+export interface McpToolCallResult {
+  readonly result: unknown;
+  readonly isError: boolean;
+}
+
 export type McpServerConnectionStatus = "connected" | "start_failed" | "initialize_failed" | "disconnected";
 
 export interface McpServerSnapshot {

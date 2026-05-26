@@ -1,6 +1,6 @@
 import { loadMcpConfig } from "./config.js";
 import { McpClient, McpInitializationError, McpStartError } from "./client.js";
-import type { McpOverview, McpServerConfig, McpServerSnapshot, McpTool } from "./types.js";
+import type { McpOverview, McpServerConfig, McpServerSnapshot, McpTool, McpToolCallResult } from "./types.js";
 
 interface ManagedServer {
   readonly configKey: string;
@@ -70,6 +70,29 @@ export class McpManager {
     }
 
     this.servers.clear();
+  }
+
+  async callTool(
+    serverName: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    timeoutMs?: number
+  ): Promise<McpToolCallResult> {
+    const server = this.servers.get(serverName);
+
+    if (server === undefined) {
+      throw new Error(`MCP server \`${serverName}\` is not in the discovered MCP directory.`);
+    }
+
+    if (server.snapshot.status !== "connected" || server.client === undefined || !server.client.isConnected()) {
+      throw new Error(`MCP server \`${serverName}\` is not connected.`);
+    }
+
+    if (!server.snapshot.tools.some((tool) => tool.name === toolName)) {
+      throw new Error(`MCP tool \`${serverName}.${toolName}\` is not in the discovered MCP directory.`);
+    }
+
+    return server.client.callTool(toolName, args, timeoutMs);
   }
 
   private async refreshServer(config: McpServerConfig): Promise<McpServerSnapshot> {

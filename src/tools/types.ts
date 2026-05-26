@@ -1,4 +1,6 @@
-export type ToolName = "read_file" | "grep" | "shell";
+import type { McpManager } from "../mcp/manager.js";
+
+export type ToolName = "read_file" | "grep" | "shell" | "mcp_call";
 
 export interface ToolAction {
   readonly tool: ToolName;
@@ -7,6 +9,7 @@ export interface ToolAction {
 
 export interface ToolContext {
   readonly cwd: string;
+  readonly mcpManager?: McpManager;
 }
 
 export interface ReadFileSuccessObservation {
@@ -48,6 +51,16 @@ export interface ShellSuccessObservation {
   readonly truncated: boolean;
 }
 
+export interface McpCallSuccessObservation {
+  readonly ok: true;
+  readonly tool: "mcp_call";
+  readonly server: string;
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
+  readonly result: unknown;
+  readonly isError: boolean;
+}
+
 export interface ToolErrorObservation {
   readonly ok: false;
   readonly tool: ToolName;
@@ -58,6 +71,7 @@ export type ToolObservation =
   | ReadFileSuccessObservation
   | GrepSuccessObservation
   | ShellSuccessObservation
+  | McpCallSuccessObservation
   | ToolErrorObservation;
 
 export interface ToolDefinition {

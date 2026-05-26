@@ -130,7 +130,7 @@ export function App({ runtime }: AppProps): React.ReactElement {
             approvalResolver.current = resolve;
             setPendingApproval(request);
             setStatus("approving");
-            setStatusText("Approve shell command? Press y to run, n to deny.");
+            setStatusText(`Approve ${formatApprovalKind(request)}? Press y to run, n to deny.`);
           });
         }
       })
@@ -190,7 +190,7 @@ export function App({ runtime }: AppProps): React.ReactElement {
     approvalResolver.current = undefined;
     setPendingApproval(undefined);
     setStatus("working");
-    setStatusText(approved ? "Shell command approved; running..." : "Shell command denied; continuing...");
+    setStatusText(approved ? "Tool call approved; running..." : "Tool call denied; continuing...");
     resolve?.(approved);
   }, []);
 
@@ -276,8 +276,9 @@ function CommandApprovalView({ request }: { readonly request: ApprovalRequest | 
 
   return (
     <Box borderStyle="round" borderColor="yellow" paddingX={1} marginTop={1} flexDirection="column">
-      <Text color="yellow">Shell command approval required</Text>
-      <Text>{request.command}</Text>
+      <Text color="yellow">{formatApprovalTitle(request)}</Text>
+      <Text>{formatApprovalDetails(request)}</Text>
+      {request.reason.length > 0 ? <Text color="gray">{request.reason}</Text> : null}
       <Text color="gray">Press y to run, n to deny.</Text>
     </Box>
   );
@@ -301,21 +302,21 @@ function formatAgentEvent(event: AgentEvent): UiMessage {
   if (event.type === "approval_requested") {
     return {
       role: "system",
-      content: `Approval requested for shell command: ${event.request.command}`
+      content: `Approval requested for ${formatApprovalKind(event.request)}: ${formatApprovalDetails(event.request)}`
     };
   }
 
   if (event.type === "approval_granted") {
     return {
       role: "system",
-      content: `Approval granted: ${event.request.command}`
+      content: `Approval granted: ${formatApprovalDetails(event.request)}`
     };
   }
 
   if (event.type === "approval_denied") {
     return {
       role: "system",
-      content: `Approval denied: ${event.request.command}`
+      content: `Approval denied: ${formatApprovalDetails(event.request)}`
     };
   }
 
@@ -349,6 +350,13 @@ function formatToolCall(event: Extract<AgentEvent, { readonly type: "tool_call" 
     return `Model requested shell${typeof command === "string" ? `: ${command}` : ""}`;
   }
 
+  if (action.tool === "mcp_call") {
+    const server = action.arguments.server;
+    const name = action.arguments.name;
+    const target = typeof server === "string" && typeof name === "string" ? `${server}.${name}` : "";
+    return `Model requested mcp_call${target.length > 0 ? `: ${target}` : ""}`;
+  }
+
   const query = action.arguments.query;
   const include = action.arguments.include;
   const queryText = typeof query === "string" ? `: ${query}` : "";
@@ -369,6 +377,13 @@ function formatToolObservation(observation: Extract<AgentEvent, { readonly type:
     return formatCommandFinished(observation);
   }
 
+  if (observation.tool === "mcp_call") {
+    const status = observation.isError ? "business error" : "completed";
+    return `Runtime mcp_call ${status}: ${observation.server}.${observation.name}\n${truncateForDisplay(
+      JSON.stringify(observation.result, null, 2)
+    )}`;
+  }
+
   const header = `Runtime grep completed: ${observation.matchCount} match${
     observation.matchCount === 1 ? "" : "es"
   } after searching ${observation.searchedFiles} file${observation.searchedFiles === 1 ? "" : "s"}`;
@@ -387,15 +402,15 @@ function formatAgentStatus(event: AgentEvent): string {
   }
 
   if (event.type === "approval_requested") {
-    return "Waiting for shell command approval...";
+    return `Waiting for ${formatApprovalKind(event.request)} approval...`;
   }
 
   if (event.type === "approval_granted") {
-    return "Shell command approved; running...";
+    return "Tool call approved; running...";
   }
 
   if (event.type === "approval_denied") {
-    return "Shell command denied; continuing model request...";
+    return "Tool call denied; continuing model request...";
   }
 
   if (event.type === "command_finished") {
@@ -464,4 +479,25 @@ function truncateForDisplay(value: string): string {
   }
 
   return `${value.slice(0, maxChars)}\n...display truncated`;
+}
+
+function formatApprovalKind(request: ApprovalRequest): string {
+  return request.action.tool === "mcp_call" ? "MCP tool call" : "shell command";
+}
+
+function formatApprovalTitle(request: ApprovalRequest): string {
+  return request.action.tool === "mcp_call" ? "MCP tool approval required" : "Shell command approval required";
+}
+
+function formatApprovalDetails(request: ApprovalRequest): string {
+  if (request.action.tool !== "mcp_call") {
+    return request.command;
+  }
+
+  const server = request.action.arguments.server;
+  const name = request.action.arguments.name;
+  const toolArguments = request.action.arguments.arguments;
+  const target = typeof server === "string" && typeof name === "string" ? `${server}.${name}` : request.command;
+  const argsText = JSON.stringify(toolArguments ?? {});
+  return `${target} ${argsText}`;
 }

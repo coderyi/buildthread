@@ -1,6 +1,6 @@
 import type { ToolAction } from "../tools/types.js";
 
-export type ToolCapability = "workspace_read" | "shell_command";
+export type ToolCapability = "workspace_read" | "shell_command" | "external_tool";
 
 export interface PermissionDecision {
   readonly capability: ToolCapability;
@@ -9,7 +9,15 @@ export interface PermissionDecision {
 }
 
 export function getToolCapability(action: ToolAction): ToolCapability {
-  return action.tool === "shell" ? "shell_command" : "workspace_read";
+  if (action.tool === "shell") {
+    return "shell_command";
+  }
+
+  if (action.tool === "mcp_call") {
+    return "external_tool";
+  }
+
+  return "workspace_read";
 }
 
 export function decideToolPermission(action: ToolAction): PermissionDecision {
@@ -20,6 +28,14 @@ export function decideToolPermission(action: ToolAction): PermissionDecision {
       capability,
       requiresApproval: true,
       reason: "Shell commands require explicit user approval."
+    };
+  }
+
+  if (capability === "external_tool") {
+    return {
+      capability,
+      requiresApproval: true,
+      reason: "External MCP tool calls require explicit user approval."
     };
   }
 

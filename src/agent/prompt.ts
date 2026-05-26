@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../model/types.js";
+import type { McpOverview, McpServerSnapshot, McpTool } from "../mcp/types.js";
 import type { ActivatedSkill } from "../skills/types.js";
 import type { WorkspaceSnapshot } from "../workspace/files.js";
 import type { ConversationMessage } from "./conversation.js";
@@ -7,13 +8,15 @@ export function buildMessages(
   userPrompt: string,
   snapshot: WorkspaceSnapshot,
   history: readonly ConversationMessage[] = [],
-  skill?: ActivatedSkill
+  skill?: ActivatedSkill,
+  mcpOverview?: McpOverview
 ): readonly ChatMessage[] {
   return [
     {
       role: "system",
       content: buildSystemPrompt()
     },
+    ...renderMcpDirectoryMessage(mcpOverview),
     ...renderSkillMessage(skill),
     ...renderHistory(history),
     {
@@ -69,10 +72,26 @@ Run a shell command in the working directory:
   }
 }
 
+Call an MCP tool from the available MCP tool directory:
+
+{
+  "action": {
+    "tool": "mcp_call",
+    "arguments": {
+      "server": "server-name",
+      "name": "tool-name",
+      "arguments": {
+        "key": "value"
+      }
+    }
+  }
+}
+
 Tool rules:
 - Use grep when you need to find relevant files by text. grep searches literal text, accepts query and optional include, returns matching paths, line numbers, and lines, and may truncate large result sets.
 - Use read_file when you need exact file contents before answering or editing.
 - Use shell only when the user asks you to run a command or when a command result is necessary to answer accurately. Shell commands always run in the working directory and require user approval before execution. Do not assume a denied command ran.
+- Use mcp_call only for tools listed in the available MCP tool directory. MCP calls require user approval before execution. Do not assume a denied MCP call ran.
 - For requests that ask you to find where a UI, component, function, or behavior is implemented and explain it, request grep first when the relevant file is not already clear, then read_file for the most relevant file before returning your final result.
 
 After tool observations, return one final JSON object matching this schema:
@@ -103,6 +122,70 @@ Schema rules:
 - changes[].contentLines: string[] containing complete file content, one line per item, with no newline characters inside items.
 - Preserve exact file content by splitting it into contentLines; Markdown code fences are ordinary line strings.
 - Do not include both action and changes in the same response.`;
+}
+
+function renderMcpDirectoryMessage(overview: McpOverview | undefined): readonly ChatMessage[] {
+  if (overview === undefined) {
+    return [];
+  }
+
+  return [
+    {
+      role: "system",
+      content: buildMcpDirectoryPrompt(overview)
+    }
+  ];
+}
+
+function buildMcpDirectoryPrompt(overview: McpOverview): string {
+  if (overview.status === "not_configured") {
+    return `Available MCP tool directory:
+(none; no MCP config found at ${overview.path})`;
+  }
+
+  if (overview.status === "config_error") {
+    return `Available MCP tool directory:
+(none; MCP config error at ${overview.error.path}: ${overview.error.message})`;
+  }
+
+  const connectedServers = overview.servers.filter((server) => server.status === "connected" && server.tools.length > 0);
+
+  if (connectedServers.length === 0) {
+    return `Available MCP tool directory:
+(none; no connected MCP servers expose tools)`;
+  }
+
+  const lines = ["Available MCP tool directory:", "Use only these server/tool pairs with mcp_call:"];
+
+  for (const server of connectedServers) {
+    lines.push(...renderMcpServerTools(server));
+  }
+
+  return lines.join("\n");
+}
+
+function renderMcpServerTools(server: McpServerSnapshot): readonly string[] {
+  const lines = [`- server: ${server.name}`];
+
+  for (const tool of server.tools) {
+    lines.push(...renderMcpTool(tool));
+  }
+
+  return lines;
+}
+
+function renderMcpTool(tool: McpTool): readonly string[] {
+  const lines = [`  - name: ${tool.name}`];
+
+  if (tool.description !== undefined && tool.description.length > 0) {
+    lines.push(`    description: ${tool.description}`);
+  }
+
+  if (tool.inputSchema !== undefined) {
+    lines.push(`    inputSchema: ${JSON.stringify(tool.inputSchema)}`);
+  }
+
+  return lines;
 }
 
 function renderSkillMessage(skill: ActivatedSkill | undefined): readonly ChatMessage[] {

@@ -1,9 +1,16 @@
 import { JsonRpcClient } from "./json-rpc.js";
 import { McpStdioProcess, type McpProcessExit } from "./stdio.js";
-import type { McpServerCapabilities, McpServerConfig, McpServerInfo, McpTool } from "./types.js";
+import type {
+  McpServerCapabilities,
+  McpServerConfig,
+  McpServerInfo,
+  McpTool,
+  McpToolCallResult
+} from "./types.js";
 
 const DEFAULT_INITIALIZE_TIMEOUT_MS = 5_000;
 const DEFAULT_TOOLS_LIST_TIMEOUT_MS = 5_000;
+export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 15_000;
 const MCP_PROTOCOL_VERSION = "2024-11-05";
 const MAX_TOOL_LIST_PAGES = 10;
 
@@ -101,6 +108,26 @@ export class McpClient {
     }
 
     throw new Error(`MCP tools/list exceeded ${MAX_TOOL_LIST_PAGES} pages.`);
+  }
+
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    timeoutMs = DEFAULT_TOOL_CALL_TIMEOUT_MS
+  ): Promise<McpToolCallResult> {
+    const result = await this.rpc.request<unknown>(
+      "tools/call",
+      {
+        name,
+        arguments: args
+      },
+      timeoutMs
+    );
+
+    return {
+      result,
+      isError: isRecord(result) && result.isError === true
+    };
   }
 
   close(): void {

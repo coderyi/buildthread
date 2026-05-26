@@ -1,5 +1,6 @@
 import { DeepSeekClient } from "../model/deepseek.js";
 import type { AssistantResponse, ChatMessage, ModelClient } from "../model/types.js";
+import { McpManager } from "../mcp/manager.js";
 import { decideToolPermission } from "../policy/permissions.js";
 import { executeToolAction, isRegisteredToolName } from "../tools/registry.js";
 import type { ToolAction, ToolObservation } from "../tools/types.js";
@@ -97,69 +98,73 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
 
   const snapshot = await scanWorkspace(runtime.cwd);
   const client = options.client ?? new DeepSeekClient({ apiKey: runtime.apiKey });
-  const messages: ChatMessage[] = [...buildMessages(options.prompt, snapshot, getHistoryWindow(options.session), skill)];
+  const mcpManager = new McpManager(runtime.cwd);
+  const mcpOverview = await mcpManager.refresh();
 
-  for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
-    const rawResponse = runtime.stream
-      ? await readStreamedResponse(client, runtime.model, messages)
-      : await readCompleteResponse(client, runtime.model, messages);
-    const assistantResponse = parseAssistantResponse(rawResponse);
+  try {
+    const messages: ChatMessage[] = [
+      ...buildMessages(options.prompt, snapshot, getHistoryWindow(options.session), skill, mcpOverview)
+    ];
 
-    if (assistantResponse.type === "message") {
-      if (runtime.stream) {
-        options.onToken?.(rawResponse);
+    for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
+      const rawResponse = runtime.stream
+        ? await readStreamedResponse(client, runtime.model, messages)
+        : await readCompleteResponse(client, runtime.model, messages);
+      const assistantResponse = parseAssistantResponse(rawResponse);
+
+      if (assistantResponse.type === "message") {
+        if (runtime.stream) {
+          options.onToken?.(rawResponse);
+        }
+
+        const parsed = parseAssistantResult(assistantResponse.content);
+        const changes = await prepareChanges(runtime.cwd, parsed.changes);
+        const nextSession = appendAgentTurn(options.session, options.prompt, parsed.message);
+
+        return {
+          message: parsed.message,
+          rawResponse,
+          session: nextSession,
+          snapshot,
+          changes,
+          diff: formatPreparedDiff(changes)
+        };
       }
 
-      const parsed = parseAssistantResult(assistantResponse.content);
-      const changes = await prepareChanges(runtime.cwd, parsed.changes);
-      const nextSession = appendAgentTurn(options.session, options.prompt, parsed.message);
+      if (round >= MAX_TOOL_ROUNDS) {
+        throw new Error(`Model exceeded the maximum of ${MAX_TOOL_ROUNDS} tool round(s).`);
+      }
 
-      return {
-        message: parsed.message,
-        rawResponse,
-        session: nextSession,
-        snapshot,
-        changes,
-        diff: formatPreparedDiff(changes)
-      };
+      const toolRound = round + 1;
+      options.onEvent?.({ type: "tool_call", round: toolRound, action: assistantResponse.action });
+      const observation = await executeToolActionWithApproval(assistantResponse.action, toolRound, options, mcpManager);
+      messages.push(
+        { role: "assistant", content: rawResponse },
+        { role: "user", content: renderToolObservation(observation) }
+      );
     }
 
-    if (round >= MAX_TOOL_ROUNDS) {
-      throw new Error(`Model exceeded the maximum of ${MAX_TOOL_ROUNDS} tool round(s).`);
-    }
-
-    const toolRound = round + 1;
-    options.onEvent?.({ type: "tool_call", round: toolRound, action: assistantResponse.action });
-    const observation = await executeToolActionWithApproval(assistantResponse.action, toolRound, options);
-    messages.push(
-      { role: "assistant", content: rawResponse },
-      { role: "user", content: renderToolObservation(observation) }
-    );
+    throw new Error(`Model exceeded the maximum of ${MAX_TOOL_ROUNDS} tool round(s).`);
+  } finally {
+    mcpManager.dispose();
   }
-
-  throw new Error(`Model exceeded the maximum of ${MAX_TOOL_ROUNDS} tool round(s).`);
 }
 
 async function executeToolActionWithApproval(
   action: ToolAction,
   round: number,
-  options: AgentRunOptions
+  options: AgentRunOptions,
+  mcpManager: McpManager
 ): Promise<ToolObservation> {
   const decision = decideToolPermission(action);
 
   if (!decision.requiresApproval) {
-    const observation = await executeToolAction(action, { cwd: options.session.runtime.cwd });
+    const observation = await executeToolAction(action, { cwd: options.session.runtime.cwd, mcpManager });
     options.onEvent?.({ type: "tool_observation", round, observation });
     return observation;
   }
 
-  const command = getShellCommand(action);
-
-  if (command === undefined) {
-    const observation = await executeToolAction(action, { cwd: options.session.runtime.cwd });
-    options.onEvent?.({ type: "tool_observation", round, observation });
-    return observation;
-  }
+  const command = formatApprovalSubject(action);
 
   const request: ApprovalRequest = {
     id: `${round}-${Date.now()}`,
@@ -173,7 +178,7 @@ async function executeToolActionWithApproval(
     const observation: ToolObservation = {
       ok: false,
       tool: action.tool,
-      error: `Shell command requires user approval, but no approval handler is available: ${command}`
+      error: `Tool call requires user approval, but no approval handler is available: ${command}`
     };
     options.onEvent?.({ type: "approval_denied", round, request, observation });
     return observation;
@@ -185,26 +190,37 @@ async function executeToolActionWithApproval(
     const observation: ToolObservation = {
       ok: false,
       tool: action.tool,
-      error: `Shell command denied by user: ${command}`
+      error: `Tool call denied by user: ${command}`
     };
     options.onEvent?.({ type: "approval_denied", round, request, observation });
     return observation;
   }
 
   options.onEvent?.({ type: "approval_granted", round, request });
-  const observation = await executeToolAction(action, { cwd: options.session.runtime.cwd });
-  options.onEvent?.({ type: "command_finished", round, observation });
+  const observation = await executeToolAction(action, { cwd: options.session.runtime.cwd, mcpManager });
+  if (action.tool === "shell") {
+    options.onEvent?.({ type: "command_finished", round, observation });
+  }
   options.onEvent?.({ type: "tool_observation", round, observation });
   return observation;
 }
 
-function getShellCommand(action: ToolAction): string | undefined {
-  if (action.tool !== "shell") {
-    return undefined;
+function formatApprovalSubject(action: ToolAction): string {
+  if (action.tool === "shell") {
+    const command = action.arguments.command;
+    return typeof command === "string" && command.trim().length > 0 ? command : "shell command";
   }
 
-  const command = action.arguments.command;
-  return typeof command === "string" && command.trim().length > 0 ? command : undefined;
+  if (action.tool === "mcp_call") {
+    const server = action.arguments.server;
+    const name = action.arguments.name;
+    const toolArguments = action.arguments.arguments;
+    const target =
+      typeof server === "string" && typeof name === "string" ? `${server}.${name}` : "MCP tool";
+    return `${target} ${JSON.stringify(toolArguments ?? {})}`;
+  }
+
+  return action.tool;
 }
 
 async function readCompleteResponse(

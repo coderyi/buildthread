@@ -49,7 +49,21 @@ async function confirm(question: string): Promise<boolean> {
 }
 
 async function confirmShellCommand(request: ApprovalRequest): Promise<boolean> {
+  if (request.action.tool === "mcp_call") {
+    writeLine("MCP tool approval required:");
+    writeLine(formatMcpCall(request));
+    return confirm("Run this MCP tool? [y/N] ");
+  }
+
   writeLine("Shell command approval required:");
   writeLine(request.command);
   return confirm("Run this command? [y/N] ");
+}
+
+function formatMcpCall(request: ApprovalRequest): string {
+  const server = request.action.arguments.server;
+  const name = request.action.arguments.name;
+  const toolArguments = request.action.arguments.arguments;
+  const target = typeof server === "string" && typeof name === "string" ? `${server}.${name}` : request.command;
+  return `${target} ${JSON.stringify(toolArguments ?? {})}`;
 }
