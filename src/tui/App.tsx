@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { RuntimeOptions } from "../cli/runtime.js";
 import { runAgent, type AgentEvent, type ApprovalRequest } from "../agent/session.js";
-import { createAgentSession, type AgentSession } from "../agent/conversation.js";
+import { createAgentSession, restoreAgentSession, type AgentSession } from "../agent/conversation.js";
 import { applyPreparedChanges, type PreparedChange } from "../agent/changes.js";
 import { parseSkillInput } from "../agent/skill-input.js";
 import { MessageList, type UiMessage } from "./components/MessageList.js";
@@ -11,20 +11,38 @@ import { StatusLine } from "./components/StatusLine.js";
 import { DiffView } from "./components/DiffView.js";
 import { disposeSlashCommandResources, executeSlashCommand, parseReviewSlashCommand } from "./slash-commands.js";
 import { runReview, type ReviewEvent } from "../review/session.js";
+import {
+  createSession,
+  forkSession,
+  listSessions,
+  resumeSession,
+  type CreateSessionOptions,
+  type ResumeSessionResult
+} from "../sessions/store.js";
+import { formatSessionList } from "../sessions/render.js";
+import { parseSessionCommand, type SessionCommand } from "./session-commands.js";
 
 interface AppProps {
   readonly runtime: RuntimeOptions;
+  readonly appVersion: string;
+  readonly initialPersistent?: ResumeSessionResult;
 }
 
 type AppStatus = "idle" | "working" | "approving" | "confirming" | "applying" | "error";
 
-export function App({ runtime }: AppProps): React.ReactElement {
+export function App({ runtime, appVersion, initialPersistent }: AppProps): React.ReactElement {
   const { exit } = useApp();
-  const [messages, setMessages] = useState<readonly UiMessage[]>([]);
-  const [agentSession, setAgentSession] = useState<AgentSession>(() => createAgentSession(runtime));
+  const [messages, setMessages] = useState<readonly UiMessage[]>(() => replayMessages(initialPersistent));
+  const [agentSession, setAgentSession] = useState<AgentSession>(() =>
+    initialPersistent === undefined
+      ? createAgentSession(runtime)
+      : restoreAgentSession(runtime, initialPersistent.loaded.reduced.messages)
+  );
+  const [persistent, setPersistent] = useState<ResumeSessionResult | undefined>(initialPersistent);
+  const persistentRef = useRef<ResumeSessionResult | undefined>(initialPersistent);
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<AppStatus>("idle");
-  const [statusText, setStatusText] = useState("Ready");
+  const [statusText, setStatusText] = useState(() => readyStatus(initialPersistent?.handle.sessionId));
   const [diff, setDiff] = useState("");
   const [pendingChanges, setPendingChanges] = useState<readonly PreparedChange[]>([]);
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | undefined>(undefined);
@@ -36,13 +54,43 @@ export function App({ runtime }: AppProps): React.ReactElement {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      void persistent?.handle.close();
+    };
+  }, [persistent]);
+
+  const sessionOptions: CreateSessionOptions = {
+    cwd: runtime.cwd,
+    model: runtime.model,
+    appVersion,
+    maxHistoryTurns: agentSession.maxHistoryTurns,
+    secrets: [runtime.apiKey]
+  };
+
   const submit = useCallback(
     (prompt: string) => {
-      setMessages((current) => [...current, { role: "user", content: prompt }]);
       setInput("");
       setDiff("");
       setPendingChanges([]);
       setPendingApproval(undefined);
+
+      let sessionCommand: SessionCommand | undefined;
+      try {
+        sessionCommand = parseSessionCommand(prompt);
+      } catch (error: unknown) {
+        showInputError(error, "Session command usage error.");
+        return;
+      }
+
+      if (sessionCommand !== undefined) {
+        setStatus("working");
+        setStatusText("Updating session...");
+        void executeSessionCommand(sessionCommand);
+        return;
+      }
+
+      setMessages((current) => [...current, { role: "user", content: prompt }]);
 
       let reviewRequest: ReturnType<typeof parseReviewSlashCommand>;
 
@@ -70,7 +118,7 @@ export function App({ runtime }: AppProps): React.ReactElement {
           .then((result) => {
             setMessages((current) => [...current, { role: "assistant", content: result.formatted }]);
             setStatus("idle");
-            setStatusText("Ready");
+            setStatusText(readyStatus(persistentRef.current?.handle.sessionId));
           })
           .catch((error: unknown) => {
             const message = error instanceof Error ? error.message : String(error);
@@ -91,7 +139,7 @@ export function App({ runtime }: AppProps): React.ReactElement {
           .then((output) => {
             setMessages((current) => [...current, { role: "system", content: output.content }]);
             setStatus("idle");
-            setStatusText(output.statusText);
+            setStatusText(withSessionStatus(output.statusText, persistentRef.current?.handle.sessionId));
           })
           .catch((error: unknown) => {
             const message = error instanceof Error ? error.message : String(error);
@@ -117,23 +165,25 @@ export function App({ runtime }: AppProps): React.ReactElement {
       setStatus("working");
       setStatusText("Reading workspace and requesting model...");
 
-      void runAgent({
-        session: agentSession,
-        prompt: parsedPrompt.prompt,
-        ...(parsedPrompt.skillName === undefined ? {} : { skillName: parsedPrompt.skillName }),
-        onEvent: (event) => {
-          setMessages((current) => [...current, formatAgentEvent(event)]);
-          setStatusText(formatAgentStatus(event));
-        },
-        requestApproval: (request) => {
-          return new Promise<boolean>((resolve) => {
-            approvalResolver.current = resolve;
-            setPendingApproval(request);
-            setStatus("approving");
-            setStatusText(`Approve ${formatApprovalKind(request)}? Press y to run, n to deny.`);
-          });
-        }
-      })
+      void ensurePersistentSession()
+        .then((active) => runAgent({
+          session: active.session,
+          prompt: parsedPrompt.prompt,
+          recorder: active.persistent.handle,
+          ...(parsedPrompt.skillName === undefined ? {} : { skillName: parsedPrompt.skillName }),
+          onEvent: (event) => {
+            setMessages((current) => [...current, formatAgentEvent(event)]);
+            setStatusText(formatAgentStatus(event));
+          },
+          requestApproval: (request) => {
+            return new Promise<boolean>((resolve) => {
+              approvalResolver.current = resolve;
+              setPendingApproval(request);
+              setStatus("approving");
+              setStatusText(`Approve ${formatApprovalKind(request)}? Press y to run, n to deny.`);
+            });
+          }
+        }))
         .then((result) => {
           setAgentSession(result.session);
           setMessages((current) => [
@@ -148,7 +198,7 @@ export function App({ runtime }: AppProps): React.ReactElement {
             setStatusText("Review the proposed changes.");
           } else {
             setStatus("idle");
-            setStatusText("Ready");
+            setStatusText(readyStatus(persistentRef.current?.handle.sessionId));
           }
         })
         .catch((error: unknown) => {
@@ -158,8 +208,85 @@ export function App({ runtime }: AppProps): React.ReactElement {
           setStatusText("Request failed. Press Enter to continue or Ctrl+C to exit.");
         });
     },
-    [agentSession, runtime]
+    [agentSession, persistent, runtime, appVersion]
   );
+
+  async function ensurePersistentSession(): Promise<{ readonly session: AgentSession; readonly persistent: ResumeSessionResult }> {
+    if (persistent !== undefined) {
+      return { session: agentSession, persistent };
+    }
+    const created = await createSession(sessionOptions);
+    persistentRef.current = created;
+    setPersistent(created);
+    return { session: agentSession, persistent: created };
+  }
+
+  async function executeSessionCommand(command: SessionCommand): Promise<void> {
+    try {
+      if (command.type === "sessions") {
+        const rendered = formatSessionList(await listSessions(runtime.cwd));
+        setMessages((current) => [...current, { role: "system", content: rendered }]);
+        setStatus("idle");
+        setStatusText(readyStatus(persistentRef.current?.handle.sessionId));
+        return;
+      }
+
+      if (command.type === "resume" && command.sessionId === undefined) {
+        const recent = formatSessionList(await listSessions(runtime.cwd));
+        setMessages((current) => [...current, { role: "system", content: `Usage: /resume <session-id>\n\n${recent}` }]);
+        setStatus("idle");
+        setStatusText(readyStatus(persistentRef.current?.handle.sessionId));
+        return;
+      }
+
+      if (command.type === "resume" && command.sessionId === persistentRef.current?.handle.sessionId) {
+        setMessages((current) => [...current, { role: "system", content: `Already using session ${command.sessionId}.` }]);
+        setStatus("idle");
+        setStatusText(readyStatus(command.sessionId));
+        return;
+      }
+
+      if (command.type === "fork" && persistentRef.current === undefined) {
+        throw new Error("There is no current session to fork. Complete a chat turn first.");
+      }
+
+      const next = command.type === "resume"
+        ? await resumeSession(sessionOptions, command.sessionId ?? "")
+        : await forkSession(persistentRef.current!.handle, sessionOptions);
+      const previous = persistentRef.current;
+      try {
+        await previous?.handle.close();
+      } catch (error: unknown) {
+        await next.handle.close().catch(() => undefined);
+        persistentRef.current = undefined;
+        setPersistent(undefined);
+        setAgentSession(createAgentSession(runtime));
+        throw error;
+      }
+      const nextAgentSession = restoreAgentSession(runtime, next.loaded.reduced.messages);
+      const notice = command.type === "fork"
+        ? `Forked as ${next.handle.sessionId}. Conversation history was copied; working files are shared.`
+        : `Resumed session ${next.handle.sessionId}.`;
+      persistentRef.current = next;
+      setPersistent(next);
+      setAgentSession(nextAgentSession);
+      setMessages([...replayMessages(next), { role: "system", content: [notice, ...next.compatibilityWarnings].join("\n") }]);
+      setStatus("idle");
+      setStatusText(readyStatus(next.handle.sessionId));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessages((current) => [...current, { role: "system", content: message }]);
+      setStatus("error");
+      setStatusText("Session command failed. Press Enter to continue or Ctrl+C to exit.");
+    }
+  }
+
+  function showInputError(error: unknown, statusMessage: string): void {
+    const message = error instanceof Error ? error.message : String(error);
+    setMessages((current) => [...current, { role: "system", content: message }]);
+    setStatus("error");
+    setStatusText(`${statusMessage} Press Enter to continue or Ctrl+C to exit.`);
+  }
 
   const applyChanges = useCallback(() => {
     const changes = pendingChanges;
@@ -175,7 +302,7 @@ export function App({ runtime }: AppProps): React.ReactElement {
         setPendingChanges([]);
         setDiff("");
         setStatus("idle");
-        setStatusText("Ready");
+        setStatusText(readyStatus(persistentRef.current?.handle.sessionId));
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -196,8 +323,17 @@ export function App({ runtime }: AppProps): React.ReactElement {
 
   useInput((inputChar, key) => {
     if (key.ctrl && inputChar === "c") {
-      disposeSlashCommandResources();
-      exit();
+      setStatusText("Closing session...");
+      const handle = persistentRef.current?.handle;
+      if (handle === undefined) {
+        disposeSlashCommandResources();
+        exit();
+        return;
+      }
+      void handle.close().finally(() => {
+        disposeSlashCommandResources();
+        exit();
+      });
       return;
     }
 
@@ -228,7 +364,7 @@ export function App({ runtime }: AppProps): React.ReactElement {
 
     if (status === "error" && key.return) {
       setStatus("idle");
-      setStatusText("Ready");
+      setStatusText(readyStatus(persistentRef.current?.handle.sessionId));
       return;
     }
 
@@ -267,6 +403,21 @@ export function App({ runtime }: AppProps): React.ReactElement {
       />
     </Box>
   );
+}
+
+function replayMessages(persistent: ResumeSessionResult | undefined): readonly UiMessage[] {
+  if (persistent === undefined) {
+    return [];
+  }
+  return persistent.loaded.reduced.messages.map((message) => ({ role: message.role, content: message.content }));
+}
+
+function readyStatus(sessionId: string | undefined): string {
+  return sessionId === undefined ? "Ready" : `Ready · Session ${sessionId}`;
+}
+
+function withSessionStatus(status: string, sessionId: string | undefined): string {
+  return sessionId === undefined ? status : `${status} · Session ${sessionId}`;
 }
 
 function CommandApprovalView({ request }: { readonly request: ApprovalRequest | undefined }): React.ReactElement | null {

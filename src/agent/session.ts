@@ -23,6 +23,14 @@ export interface AgentRunOptions {
   readonly onToken?: (token: string) => void;
   readonly onEvent?: (event: AgentEvent) => void;
   readonly requestApproval?: (request: ApprovalRequest) => Promise<boolean>;
+  readonly recorder?: SessionEventRecorder;
+}
+
+export interface SessionEventRecorder {
+  startTurn(prompt: string): Promise<string>;
+  recordAgentEvent(turnId: string, event: AgentEvent): Promise<void>;
+  completeTurn(turnId: string, assistantMessage: string): Promise<void>;
+  failTurn(turnId: string, error: unknown): Promise<void>;
 }
 
 export interface AgentResult {
@@ -84,24 +92,28 @@ export interface ApprovalRequest {
 
 export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
   const { runtime } = options.session;
-  const skill =
-    options.skillName === undefined ? undefined : await activateExplicitSkill(runtime.cwd, options.skillName);
-
-  if (skill !== undefined) {
-    options.onEvent?.({
-      type: "skill_selected",
-      name: skill.name,
-      source: skill.source,
-      directory: skill.directory
-    });
-  }
-
-  const snapshot = await scanWorkspace(runtime.cwd);
-  const client = options.client ?? new DeepSeekClient({ apiKey: runtime.apiKey });
-  const mcpManager = new McpManager(runtime.cwd);
-  const mcpOverview = await mcpManager.refresh();
+  let turnId: string | undefined;
+  let turnFinished = false;
+  let mcpManager: McpManager | undefined;
 
   try {
+    turnId = await options.recorder?.startTurn(options.prompt);
+    const skill =
+      options.skillName === undefined ? undefined : await activateExplicitSkill(runtime.cwd, options.skillName);
+
+    if (skill !== undefined) {
+      await emitAgentEvent(options, turnId, {
+        type: "skill_selected",
+        name: skill.name,
+        source: skill.source,
+        directory: skill.directory
+      });
+    }
+
+    const snapshot = await scanWorkspace(runtime.cwd);
+    const client = options.client ?? new DeepSeekClient({ apiKey: runtime.apiKey });
+    mcpManager = new McpManager(runtime.cwd);
+    const mcpOverview = await mcpManager.refresh();
     const messages: ChatMessage[] = [
       ...buildMessages(options.prompt, snapshot, getHistoryWindow(options.session), skill, mcpOverview)
     ];
@@ -119,6 +131,10 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
 
         const parsed = parseAssistantResult(assistantResponse.content);
         const changes = await prepareChanges(runtime.cwd, parsed.changes);
+        if (turnId !== undefined) {
+          await options.recorder?.completeTurn(turnId, parsed.message);
+        }
+        turnFinished = true;
         const nextSession = appendAgentTurn(options.session, options.prompt, parsed.message);
 
         return {
@@ -136,8 +152,8 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
       }
 
       const toolRound = round + 1;
-      options.onEvent?.({ type: "tool_call", round: toolRound, action: assistantResponse.action });
-      const observation = await executeToolActionWithApproval(assistantResponse.action, toolRound, options, mcpManager);
+      await emitAgentEvent(options, turnId, { type: "tool_call", round: toolRound, action: assistantResponse.action });
+      const observation = await executeToolActionWithApproval(assistantResponse.action, toolRound, options, mcpManager, turnId);
       messages.push(
         { role: "assistant", content: rawResponse },
         { role: "user", content: renderToolObservation(observation) }
@@ -145,8 +161,13 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
     }
 
     throw new Error(`Model exceeded the maximum of ${MAX_TOOL_ROUNDS} tool round(s).`);
+  } catch (error: unknown) {
+    if (turnId !== undefined && !turnFinished) {
+      await options.recorder?.failTurn(turnId, error).catch(() => undefined);
+    }
+    throw error;
   } finally {
-    mcpManager.dispose();
+    mcpManager?.dispose();
   }
 }
 
@@ -154,13 +175,14 @@ async function executeToolActionWithApproval(
   action: ToolAction,
   round: number,
   options: AgentRunOptions,
-  mcpManager: McpManager
+  mcpManager: McpManager,
+  turnId: string | undefined
 ): Promise<ToolObservation> {
   const decision = decideToolPermission(action);
 
   if (!decision.requiresApproval) {
     const observation = await executeToolAction(action, { cwd: options.session.runtime.cwd, mcpManager });
-    options.onEvent?.({ type: "tool_observation", round, observation });
+    await emitAgentEvent(options, turnId, { type: "tool_observation", round, observation });
     return observation;
   }
 
@@ -172,7 +194,7 @@ async function executeToolActionWithApproval(
     command,
     reason: decision.reason
   };
-  options.onEvent?.({ type: "approval_requested", round, request });
+  await emitAgentEvent(options, turnId, { type: "approval_requested", round, request });
 
   if (options.requestApproval === undefined) {
     const observation: ToolObservation = {
@@ -180,7 +202,7 @@ async function executeToolActionWithApproval(
       tool: action.tool,
       error: `Tool call requires user approval, but no approval handler is available: ${command}`
     };
-    options.onEvent?.({ type: "approval_denied", round, request, observation });
+    await emitAgentEvent(options, turnId, { type: "approval_denied", round, request, observation });
     return observation;
   }
 
@@ -196,13 +218,20 @@ async function executeToolActionWithApproval(
     return observation;
   }
 
-  options.onEvent?.({ type: "approval_granted", round, request });
+  await emitAgentEvent(options, turnId, { type: "approval_granted", round, request });
   const observation = await executeToolAction(action, { cwd: options.session.runtime.cwd, mcpManager });
   if (action.tool === "shell") {
-    options.onEvent?.({ type: "command_finished", round, observation });
+    await emitAgentEvent(options, turnId, { type: "command_finished", round, observation });
   }
-  options.onEvent?.({ type: "tool_observation", round, observation });
+  await emitAgentEvent(options, turnId, { type: "tool_observation", round, observation });
   return observation;
+}
+
+async function emitAgentEvent(options: AgentRunOptions, turnId: string | undefined, event: AgentEvent): Promise<void> {
+  options.onEvent?.(event);
+  if (turnId !== undefined) {
+    await options.recorder?.recordAgentEvent(turnId, event);
+  }
 }
 
 function formatApprovalSubject(action: ToolAction): string {

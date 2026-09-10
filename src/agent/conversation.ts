@@ -27,6 +27,19 @@ export function createAgentSession(runtime: RuntimeOptions, options: AgentSessio
   };
 }
 
+export function restoreAgentSession(
+  runtime: RuntimeOptions,
+  history: readonly ConversationMessage[],
+  options: AgentSessionOptions = {}
+): AgentSession {
+  const maxHistoryTurns = options.maxHistoryTurns ?? DEFAULT_MAX_HISTORY_TURNS;
+  return {
+    runtime,
+    history: trimHistory(history, maxHistoryTurns),
+    maxHistoryTurns
+  };
+}
+
 export function appendAgentTurn(session: AgentSession, userInput: string, assistantMessage: string): AgentSession {
   return {
     ...session,

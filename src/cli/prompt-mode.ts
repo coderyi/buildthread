@@ -5,36 +5,52 @@ import { writeLine } from "./output.js";
 import { runAgent, type ApprovalRequest } from "../agent/session.js";
 import { createAgentSession } from "../agent/conversation.js";
 import { applyPreparedChanges } from "../agent/changes.js";
+import type { SessionHandle } from "../sessions/store.js";
 
-export async function runPromptMode(runtime: RuntimeOptions, prompt: string, skillName?: string): Promise<void> {
-  const result = await runAgent({
-    session: createAgentSession(runtime),
-    prompt,
-    ...(skillName === undefined ? {} : { skillName }),
-    requestApproval: confirmShellCommand
-  });
+export interface PromptSessionContext {
+  readonly session: ReturnType<typeof createAgentSession>;
+  readonly handle: SessionHandle;
+}
 
-  if (result.message.length > 0) {
-    writeLine(result.message);
+export async function runPromptMode(
+  runtime: RuntimeOptions,
+  prompt: string,
+  context: PromptSessionContext,
+  skillName?: string
+): Promise<void> {
+  try {
+    const result = await runAgent({
+      session: context.session,
+      prompt,
+      recorder: context.handle,
+      ...(skillName === undefined ? {} : { skillName }),
+      requestApproval: confirmShellCommand
+    });
+
+    if (result.message.length > 0) {
+      writeLine(result.message);
+    }
+
+    if (result.changes.length === 0) {
+      return;
+    }
+
+    writeLine();
+    writeLine(result.diff);
+    writeLine();
+
+    const confirmed = await confirm("Apply these changes? [y/N] ");
+
+    if (!confirmed) {
+      writeLine("No files changed.");
+      return;
+    }
+
+    await applyPreparedChanges(result.changes);
+    writeLine(`Applied ${result.changes.length} change${result.changes.length === 1 ? "" : "s"}.`);
+  } finally {
+    await context.handle.close();
   }
-
-  if (result.changes.length === 0) {
-    return;
-  }
-
-  writeLine();
-  writeLine(result.diff);
-  writeLine();
-
-  const confirmed = await confirm("Apply these changes? [y/N] ");
-
-  if (!confirmed) {
-    writeLine("No files changed.");
-    return;
-  }
-
-  await applyPreparedChanges(result.changes);
-  writeLine(`Applied ${result.changes.length} change${result.changes.length === 1 ? "" : "s"}.`);
 }
 
 async function confirm(question: string): Promise<boolean> {

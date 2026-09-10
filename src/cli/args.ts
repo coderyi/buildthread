@@ -1,5 +1,5 @@
 export interface CliArgs {
-  readonly command: "chat" | "review";
+  readonly command: "chat" | "review" | "sessions" | "resume" | "fork";
   readonly model: string;
   readonly cwd: string;
   readonly apiKey?: string;
@@ -10,6 +10,8 @@ export interface CliArgs {
   readonly skill?: string;
   readonly prompt: string;
   readonly reviewArgs: readonly string[];
+  readonly sessionId?: string;
+  readonly last: boolean;
 }
 
 export class ArgParseError extends Error {
@@ -31,6 +33,8 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   let skills = false;
   let skill: string | undefined;
   let command: CliArgs["command"] = "chat";
+  let last = false;
+  let selectorBeforeLast = false;
   const promptParts: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -46,12 +50,21 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     }
 
     if (!arg.startsWith("--")) {
-      if (arg === "review" && promptParts.length === 0) {
-        command = "review";
-        promptParts.push(...argv.slice(index));
-        break;
+      if (promptParts.length === 0 && command === "chat") {
+        if (arg === "review") {
+          command = "review";
+          promptParts.push(...argv.slice(index));
+          break;
+        }
+        if (arg === "sessions" || arg === "resume" || arg === "fork") {
+          command = arg;
+          continue;
+        }
       }
 
+      if ((command === "resume" || command === "fork") && !last && promptParts.length === 0) {
+        selectorBeforeLast = true;
+      }
       promptParts.push(arg);
       continue;
     }
@@ -85,16 +98,38 @@ export function parseArgs(argv: readonly string[]): CliArgs {
         skill = readOptionValue(argv, index, arg);
         index += 1;
         break;
+      case "--last":
+        if (selectorBeforeLast) {
+          throw new ArgParseError(`${command} cannot combine a session ID with --last.`);
+        }
+        last = true;
+        break;
       default:
         throw new ArgParseError(`Unknown option: ${arg}`);
     }
   }
 
-  const prompt = promptParts.join(" ").trim();
+  let sessionId: string | undefined;
+  let commandPromptParts = promptParts;
+  if ((command === "resume" || command === "fork") && !last) {
+    sessionId = promptParts[0];
+    commandPromptParts = promptParts.slice(1);
+  }
+  const prompt = commandPromptParts.join(" ").trim();
   const reviewArgs = command === "review" ? promptParts.slice(1) : [];
+  const informational = help || version || skills;
 
-  if (skill !== undefined && command === "review" && !help && !version && !skills) {
-    throw new ArgParseError("--skill cannot be used with review.");
+  if (!informational && command === "sessions" && promptParts.length > 0) {
+    throw new ArgParseError("sessions does not accept positional arguments.");
+  }
+  if (!informational && (command === "resume" || command === "fork") && !last && sessionId === undefined) {
+    throw new ArgParseError(`${command} requires a session ID or --last.`);
+  }
+  if (!informational && last && command !== "resume" && command !== "fork") {
+    throw new ArgParseError("--last can only be used with resume or fork.");
+  }
+  if (skill !== undefined && (command === "review" || command === "sessions") && !informational) {
+    throw new ArgParseError(`--skill cannot be used with ${command}.`);
   }
 
   if (skill !== undefined && prompt.length === 0 && !help && !version && !skills) {
@@ -109,11 +144,13 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     help,
     version,
     skills,
+    last,
     prompt: command === "review" ? "" : prompt,
     reviewArgs
   };
 
-  const withApiKey = apiKey === undefined ? parsed : { ...parsed, apiKey };
+  const withSessionId = sessionId === undefined ? parsed : { ...parsed, sessionId };
+  const withApiKey = apiKey === undefined ? withSessionId : { ...withSessionId, apiKey };
   return skill === undefined ? withApiKey : { ...withApiKey, skill };
 }
 
