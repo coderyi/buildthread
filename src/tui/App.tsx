@@ -436,6 +436,10 @@ function CommandApprovalView({ request }: { readonly request: ApprovalRequest | 
 }
 
 function formatAgentEvent(event: AgentEvent): UiMessage {
+  if (event.type === "memory_warning") {
+    return { role: "system", content: `Memory warning: ${event.message}` };
+  }
+
   if (event.type === "skill_selected") {
     return {
       role: "system",
@@ -544,6 +548,10 @@ function formatToolObservation(observation: Extract<AgentEvent, { readonly type:
 }
 
 function formatAgentStatus(event: AgentEvent): string {
+  if (event.type === "memory_warning") {
+    return "Memory warning; continuing request...";
+  }
+
   if (event.type === "skill_selected") {
     return `Using skill: ${event.name}`;
   }

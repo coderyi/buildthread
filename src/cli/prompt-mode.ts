@@ -24,6 +24,11 @@ export async function runPromptMode(
       prompt,
       recorder: context.handle,
       ...(skillName === undefined ? {} : { skillName }),
+      onEvent: (event) => {
+        if (event.type === "memory_warning") {
+          process.stderr.write(`Warning: ${event.message}\n`);
+        }
+      },
       requestApproval: confirmShellCommand
     });
 

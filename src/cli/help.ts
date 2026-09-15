@@ -7,6 +7,10 @@ export function formatHelp(): string {
   buildthread [options] resume --last [prompt]
   buildthread [options] fork <session-id> [prompt]
   buildthread [options] fork --last [prompt]
+  buildthread [options] memory show
+  buildthread [options] memory add <text>
+  buildthread [options] memory remove <memory-id>
+  buildthread [options] memory path
 
 Options:
   --model <name>     Model to use. Default: deepseek-v4-flash
@@ -31,5 +35,13 @@ Sessions:
   fork               Copy stable history to a new session ID
 
 Fork copies conversation history only. It does not isolate or restore working files.
+
+Memory:
+  memory show       Show memory for the current working directory
+  memory add        Save one durable project fact, preference, or decision
+  memory remove     Remove one entry by its exact ID
+  memory path       Print the Markdown memory file path
+
+Project memory is local to the working directory. Do not store credentials in it.
 `;
 }

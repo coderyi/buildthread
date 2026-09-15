@@ -4,6 +4,13 @@ import { McpManager } from "../mcp/manager.js";
 import { formatMcpStatus } from "../mcp/render.js";
 import { parseReviewArgs } from "../review/session.js";
 import type { ReviewRequest } from "../review/types.js";
+import { addMemory, getMemoryPath, removeMemory, showMemory } from "../memory/store.js";
+import {
+  formatMemoryAdded,
+  formatMemoryRemoved,
+  formatMemoryShow,
+  formatMemoryUsage
+} from "../memory/render.js";
 
 interface SlashCommandContext {
   readonly runtime: RuntimeOptions;
@@ -34,6 +41,35 @@ export type SlashCommandResult =
     };
 
 const slashCommands: readonly SlashCommandDefinition[] = [
+  {
+    name: "memory",
+    usage: "/memory <show|add|remove|path>",
+    handler: async (args, context) => {
+      const [action, ...values] = args;
+      if (action === "show" && values.length === 0) {
+        return { content: formatMemoryShow(await showMemory(context.runtime.cwd)), statusText: "Memory shown." };
+      }
+      if (action === "path" && values.length === 0) {
+        return { content: getMemoryPath(context.runtime.cwd), statusText: "Memory path shown." };
+      }
+      if (action === "add" && values.length > 0) {
+        return {
+          content: formatMemoryAdded(await addMemory(context.runtime.cwd, values.join(" "))),
+          statusText: "Memory updated."
+        };
+      }
+      if (action === "remove" && values.length === 1) {
+        return {
+          content: formatMemoryRemoved(await removeMemory(context.runtime.cwd, values[0]!)),
+          statusText: "Memory updated."
+        };
+      }
+      return {
+        content: formatMemoryUsage("/memory"),
+        statusText: "Memory command usage error."
+      };
+    }
+  },
   {
     name: "skills",
     usage: "/skills",

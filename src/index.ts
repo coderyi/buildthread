@@ -22,6 +22,8 @@ import {
   type ResumeSessionResult
 } from "./sessions/store.js";
 import { formatSessionList } from "./sessions/render.js";
+import { addMemory, getMemoryPath, removeMemory, showMemory } from "./memory/store.js";
+import { formatMemoryAdded, formatMemoryRemoved, formatMemoryShow } from "./memory/render.js";
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -47,6 +49,27 @@ async function main(): Promise<void> {
     const cwd = await resolveWorkingDirectory(args.cwd);
     process.stdout.write(`${formatSessionList(await listSessions(cwd))}\n`);
     return;
+  }
+
+  if (args.command === "memory") {
+    const cwd = await resolveWorkingDirectory(args.cwd);
+    if (args.memoryAction === "show") {
+      process.stdout.write(`${formatMemoryShow(await showMemory(cwd))}\n`);
+      return;
+    }
+    if (args.memoryAction === "path") {
+      process.stdout.write(`${getMemoryPath(cwd)}\n`);
+      return;
+    }
+    if (args.memoryAction === "add" && args.memoryValue !== undefined) {
+      process.stdout.write(`${formatMemoryAdded(await addMemory(cwd, args.memoryValue))}\n`);
+      return;
+    }
+    if (args.memoryAction === "remove" && args.memoryValue !== undefined) {
+      process.stdout.write(`${formatMemoryRemoved(await removeMemory(cwd, args.memoryValue))}\n`);
+      return;
+    }
+    throw new Error("Invalid memory command.");
   }
 
   const runtime = await createRuntimeOptions(args);

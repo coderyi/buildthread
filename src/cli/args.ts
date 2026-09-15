@@ -1,5 +1,5 @@
 export interface CliArgs {
-  readonly command: "chat" | "review" | "sessions" | "resume" | "fork";
+  readonly command: "chat" | "review" | "sessions" | "resume" | "fork" | "memory";
   readonly model: string;
   readonly cwd: string;
   readonly apiKey?: string;
@@ -12,6 +12,8 @@ export interface CliArgs {
   readonly reviewArgs: readonly string[];
   readonly sessionId?: string;
   readonly last: boolean;
+  readonly memoryAction?: "show" | "add" | "remove" | "path";
+  readonly memoryValue?: string;
 }
 
 export class ArgParseError extends Error {
@@ -56,7 +58,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
           promptParts.push(...argv.slice(index));
           break;
         }
-        if (arg === "sessions" || arg === "resume" || arg === "fork") {
+        if (arg === "sessions" || arg === "resume" || arg === "fork" || arg === "memory") {
           command = arg;
           continue;
         }
@@ -118,6 +120,9 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   const prompt = commandPromptParts.join(" ").trim();
   const reviewArgs = command === "review" ? promptParts.slice(1) : [];
   const informational = help || version || skills;
+  const memoryAction = command === "memory" ? parseMemoryAction(promptParts[0]) : undefined;
+  const memoryArguments = command === "memory" ? promptParts.slice(1) : [];
+  let memoryValue: string | undefined;
 
   if (!informational && command === "sessions" && promptParts.length > 0) {
     throw new ArgParseError("sessions does not accept positional arguments.");
@@ -128,8 +133,27 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   if (!informational && last && command !== "resume" && command !== "fork") {
     throw new ArgParseError("--last can only be used with resume or fork.");
   }
-  if (skill !== undefined && (command === "review" || command === "sessions") && !informational) {
+  if (skill !== undefined && (command === "review" || command === "sessions" || command === "memory") && !informational) {
     throw new ArgParseError(`--skill cannot be used with ${command}.`);
+  }
+
+  if (!informational && command === "memory") {
+    if (memoryAction === undefined) {
+      throw new ArgParseError("memory requires one of: show, add, remove, path.");
+    }
+    if (memoryAction === "add") {
+      memoryValue = memoryArguments.join(" ").trim();
+      if (memoryValue.length === 0) {
+        throw new ArgParseError("memory add requires text to remember.");
+      }
+    } else if (memoryAction === "remove") {
+      if (memoryArguments.length !== 1) {
+        throw new ArgParseError("memory remove requires exactly one memory ID.");
+      }
+      memoryValue = memoryArguments[0];
+    } else if (memoryArguments.length > 0) {
+      throw new ArgParseError(`memory ${memoryAction} does not accept arguments.`);
+    }
   }
 
   if (skill !== undefined && prompt.length === 0 && !help && !version && !skills) {
@@ -145,13 +169,22 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     version,
     skills,
     last,
-    prompt: command === "review" ? "" : prompt,
-    reviewArgs
+    prompt: command === "review" || command === "memory" ? "" : prompt,
+    reviewArgs,
+    ...(memoryAction === undefined ? {} : { memoryAction }),
+    ...(memoryValue === undefined ? {} : { memoryValue })
   };
 
   const withSessionId = sessionId === undefined ? parsed : { ...parsed, sessionId };
   const withApiKey = apiKey === undefined ? withSessionId : { ...withSessionId, apiKey };
   return skill === undefined ? withApiKey : { ...withApiKey, skill };
+}
+
+function parseMemoryAction(value: string | undefined): CliArgs["memoryAction"] {
+  if (value === "show" || value === "add" || value === "remove" || value === "path") {
+    return value;
+  }
+  return undefined;
 }
 
 function readOptionValue(argv: readonly string[], index: number, option: string): string {

@@ -14,6 +14,7 @@ import {
   type PreparedChange
 } from "./changes.js";
 import { appendAgentTurn, getHistoryWindow, type AgentSession } from "./conversation.js";
+import { loadMemoryContext } from "../memory/store.js";
 
 export interface AgentRunOptions {
   readonly session: AgentSession;
@@ -43,6 +44,10 @@ export interface AgentResult {
 }
 
 export type AgentEvent =
+  | {
+      readonly type: "memory_warning";
+      readonly message: string;
+    }
   | {
       readonly type: "skill_selected";
       readonly name: string;
@@ -111,11 +116,15 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
     }
 
     const snapshot = await scanWorkspace(runtime.cwd);
+    const memory = await loadMemoryContext(runtime.cwd);
+    if (memory.warning !== undefined) {
+      await emitAgentEvent(options, turnId, { type: "memory_warning", message: memory.warning });
+    }
     const client = options.client ?? new DeepSeekClient({ apiKey: runtime.apiKey });
     mcpManager = new McpManager(runtime.cwd);
     const mcpOverview = await mcpManager.refresh();
     const messages: ChatMessage[] = [
-      ...buildMessages(options.prompt, snapshot, getHistoryWindow(options.session), skill, mcpOverview)
+      ...buildMessages(options.prompt, snapshot, getHistoryWindow(options.session), skill, mcpOverview, memory.content)
     ];
 
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
