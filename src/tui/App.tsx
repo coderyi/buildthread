@@ -8,7 +8,6 @@ import { parseSkillInput } from "../agent/skill-input.js";
 import { MessageList, type UiMessage } from "./components/MessageList.js";
 import { InputBox } from "./components/InputBox.js";
 import { StatusLine } from "./components/StatusLine.js";
-import { DiffView } from "./components/DiffView.js";
 import { disposeSlashCommandResources, executeSlashCommand, parseReviewSlashCommand } from "./slash-commands.js";
 import { runReview, type ReviewEvent } from "../review/session.js";
 import {
@@ -43,10 +42,11 @@ export function App({ runtime, appVersion, initialPersistent }: AppProps): React
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<AppStatus>("idle");
   const [statusText, setStatusText] = useState(() => readyStatus(initialPersistent?.handle.sessionId));
-  const [diff, setDiff] = useState("");
   const [pendingChanges, setPendingChanges] = useState<readonly PreparedChange[]>([]);
+  const [pendingChangeMessageId, setPendingChangeMessageId] = useState<string | undefined>(undefined);
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | undefined>(undefined);
   const approvalResolver = useRef<((approved: boolean) => void) | undefined>(undefined);
+  const changeMessageSequence = useRef(0);
 
   useEffect(() => {
     return () => {
@@ -71,8 +71,8 @@ export function App({ runtime, appVersion, initialPersistent }: AppProps): React
   const submit = useCallback(
     (prompt: string) => {
       setInput("");
-      setDiff("");
       setPendingChanges([]);
+      setPendingChangeMessageId(undefined);
       setPendingApproval(undefined);
 
       let sessionCommand: SessionCommand | undefined;
@@ -185,13 +185,19 @@ export function App({ runtime, appVersion, initialPersistent }: AppProps): React
           }
         }))
         .then((result) => {
+          const changeMessageId = result.changes.length > 0
+            ? `change-${changeMessageSequence.current += 1}`
+            : undefined;
           setAgentSession(result.session);
           setMessages((current) => [
             ...current,
-            { role: "assistant", content: result.message.length > 0 ? result.message : "Done." }
+            { role: "assistant", content: result.message.length > 0 ? result.message : "Done." },
+            ...(changeMessageId === undefined
+              ? []
+              : [{ kind: "change" as const, id: changeMessageId, diff: result.diff, status: "pending" as const }])
           ]);
-          setDiff(result.diff);
           setPendingChanges(result.changes);
+          setPendingChangeMessageId(changeMessageId);
 
           if (result.changes.length > 0) {
             setStatus("confirming");
@@ -290,27 +296,33 @@ export function App({ runtime, appVersion, initialPersistent }: AppProps): React
 
   const applyChanges = useCallback(() => {
     const changes = pendingChanges;
+    const changeMessageId = pendingChangeMessageId;
     setStatus("applying");
     setStatusText("Applying changes...");
 
     void applyPreparedChanges(changes)
       .then(() => {
         setMessages((current) => [
-          ...current,
+          ...updateChangeMessage(current, changeMessageId, "applied"),
           { role: "system", content: `Applied ${changes.length} change${changes.length === 1 ? "" : "s"}.` }
         ]);
         setPendingChanges([]);
-        setDiff("");
+        setPendingChangeMessageId(undefined);
         setStatus("idle");
         setStatusText(readyStatus(persistentRef.current?.handle.sessionId));
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        setMessages((current) => [...current, { role: "system", content: message }]);
+        setMessages((current) => [
+          ...updateChangeMessage(current, changeMessageId, "failed", message),
+          { role: "system", content: message }
+        ]);
+        setPendingChanges([]);
+        setPendingChangeMessageId(undefined);
         setStatus("error");
         setStatusText("Apply failed. Press Enter to continue or Ctrl+C to exit.");
       });
-  }, [pendingChanges]);
+  }, [pendingChanges, pendingChangeMessageId]);
 
   const answerApproval = useCallback((approved: boolean) => {
     const resolve = approvalResolver.current;
@@ -354,8 +366,9 @@ export function App({ runtime, appVersion, initialPersistent }: AppProps): React
       if (inputChar.toLowerCase() === "y") {
         applyChanges();
       } else if (inputChar.toLowerCase() === "n" || key.escape) {
+        setMessages((current) => updateChangeMessage(current, pendingChangeMessageId, "discarded"));
         setPendingChanges([]);
-        setDiff("");
+        setPendingChangeMessageId(undefined);
         setStatus("idle");
         setStatusText("No files changed.");
       }
@@ -395,13 +408,29 @@ export function App({ runtime, appVersion, initialPersistent }: AppProps): React
       <Box marginY={1} flexDirection="column">
         <MessageList messages={messages} />
         <CommandApprovalView request={pendingApproval} />
-        <DiffView diff={diff} />
       </Box>
       <InputBox
         value={input}
         disabled={status === "working" || status === "applying" || status === "approving" || status === "confirming"}
       />
     </Box>
+  );
+}
+
+function updateChangeMessage(
+  messages: readonly UiMessage[],
+  id: string | undefined,
+  status: "applied" | "discarded" | "failed",
+  error?: string
+): readonly UiMessage[] {
+  if (id === undefined) {
+    return messages;
+  }
+
+  return messages.map((message) =>
+    "kind" in message && message.id === id
+      ? { ...message, status, ...(error === undefined ? {} : { error }) }
+      : message
   );
 }
 
